@@ -62,7 +62,7 @@ static uid_t uidmin = (uid_t)INT_MIN, uidmax = (uid_t)INT_MAX;
 /* these should maybe be in a config file (use login.defs format) */
 /* event handlers end with this */
 #ifndef EVTEXT
-#define EVTEXT ".event"
+#define EVTEXT ".handler"
 #endif
 
 /* maximum number of handlers (for the same event) to run simultaneously */
