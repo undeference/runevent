@@ -324,6 +324,8 @@ void chld (int signum, siginfo_t *sinfo, void *unused) {
 int _newlen (size_t *len, const size_t min) {
 	if (*len >= min)
 		return 0;
+	if (!*len)
+		*len = 64;
 	do {
 		*len *= 2;
 	} while (*len < min);
@@ -331,7 +333,7 @@ int _newlen (size_t *len, const size_t min) {
 }
 
 char *evtpath (const struct passwd *pw) {
-	static size_t len = 0;
+	static size_t size = 0;
 	static char *path = NULL;
 	ssize_t i = 0;
 	/* path components:
@@ -340,13 +342,13 @@ char *evtpath (const struct passwd *pw) {
 	home      / EVTDIR /      evt EVTEXT */
 #define MAXEVTCOMPS 6
 	char *paths[MAXEVTCOMPS];
-	size_t lens[MAXEVTCOMPS], maxlen = 0;
+	size_t lens[MAXEVTCOMPS], len = 0;
 #undef MAXEVTCOMPS
 /* maxlen += (lens[i] = strlen ((paths[i] = (comp)))), i++; */
 #define EVTCOMP(comp) do { \
 	paths[i] = (comp); \
 	lens[i] = strlen (paths[i]); \
-	maxlen += lens[i]; \
+	len += lens[i]; \
 	i++; \
 } while (0)
 	if (pw) {
@@ -363,15 +365,15 @@ char *evtpath (const struct passwd *pw) {
 		EVTCOMP (EVTEXT);
 	}
 #undef EVTCOMP
-	if (_newlen (&len, maxlen + 1)) {
-		path = path ? realloc (path, len) : malloc (len) ;
+	if (_newlen (&size, len + 1)) {
+		path = path ? realloc (path, size) : malloc (size) ;
 		/* XXX */
 		if (!path)
 			exit (EXIT_FAILURE);
 	}
-	path[maxlen] = '\0';
-	for (i--; i >= 0; maxlen -= lens[i], i--)
-		memcpy (path + maxlen - lens[i], paths[i], lens[i]);
+	path[len] = '\0';
+	for (i--; len > 0 && i >= 0; len -= lens[i], i--)
+		memcpy (path + len - lens[i], paths[i], lens[i]);
 	return path;
 }
 
@@ -426,6 +428,10 @@ int main (int argc, char **argv) {
 	struct stat f;
 	int i = 1, done = 0;
 	char *args[2], *env[argc - i];
+
+	/* XXX */
+	if (argc < 2)
+		return EXIT_FAILURE;
 
 	/* set up argv and env */
 	evt = argv[i];
@@ -513,5 +519,5 @@ int main (int argc, char **argv) {
 			}
 		}
 	}
-	return 1;
+	return EXIT_SUCCESS;
 }
