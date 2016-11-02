@@ -1,7 +1,9 @@
 #include <time.h>
+#include <sys/time.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <sys/select.h>
+#include <sys/stat.h>
 #include <dirent.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -13,26 +15,10 @@
 #include <signal.h>
 #include <errno.h>
 #include <syslog.h>
+#include <signal.h>
 
 /* specify -I or -L or whatever it is */
 #include <bheap.h>
-
-/*
-simplest way to do this is if this is called as
-runevent evtname envname=value...
-or runevent evtname args...
-either way, different events will have different semantics
-*/
-/*
-1. get UID_MIN/MAX from login.defs
-2. register CHLD handler
-3. run system handler
-4. getpwent()
-5. if there are users to try
-a.	if there are slots available, run handler
-6. if there are processes running
-a.	select() on subprocs' fds and next signal time
-*/
 
 #ifndef LOGINDEFS
 #define LOGINDEFS "/etc/login.defs"
@@ -68,6 +54,9 @@ static uid_t uidmin = (uid_t)INT_MIN, uidmax = (uid_t)INT_MAX;
 /* maximum number of handlers (for the same event) to run simultaneously */
 #ifndef MAXPROCS
 #define MAXPROCS 4
+#endif
+#if MAXPROCS < 1
+#error "MAXPROCS must be at least 1"
 #endif
 
 /* how long a handler is allowed to run */
@@ -157,21 +146,8 @@ void closefrom (int min) {
 	closedir (d);
 }
 
-void penv (const char *n, const char *v) {
-	size_t ln = strlen (n), lv = strlen (v) + 1 /* including NUL */;
-	char buf[ln + lv + 1];
-	memcpy (buf, n, ln);
-	buf[ln] = '=';
-	memcpy (buf + 2, v, lv);
-	putenv (buf);
-}
-
-static char *evt;
-static fd_set readfds, errorfds;
-
 /* keep track of everything we need to keep track of for subprocs */
 struct subproc {
-	struct subproc *prev, *next;
 	pid_t pid;
 	uid_t uid;
 	gid_t gid;
@@ -185,8 +161,29 @@ struct subproc {
 	/* clock_gettime(CLOCK_MONOTONIC) */
 	struct timespec time;
 };
-static struct subproc *tail = NULL;
-static size_t numprocs = 0;
+
+static char *evt;
+static fd_set readfds, errorfds;
+static int nfds = 0;
+static bheap_t *heap;
+
+#define SETFDS(r,e) do { \
+	if (r >= nfds) nfds = r + 1; \
+	if (e >= nfds) nfds = e + 1; \
+	FD_SET (r, &readfds); \
+	FD_SET (e, &errorfds); \
+} while (0)
+/* doesn't adjust nfds (yet?) */
+#define CLRFDS(r,e) do { \
+	FD_CLR (r, &readfds); \
+	FD_CLR (e, &errorfds); \
+} while (0)
+
+int spcmp (const struct subproc *a, const struct subproc *b) {
+	return a->time->tv_sec == b->time->tv_sec ?
+		a->time->tv_nsec - b->time->tv_nsec :
+		a->time->tv_sec - b->time->tv_sec;
+}
 
 /*
  * Do nothing if there is no event handler
@@ -215,19 +212,13 @@ struct subproc *runevent (const struct passwd *pw, char * const *argv, char * co
 		goto fail;
 	proc->outfd = out[0];
 	proc->errfd = err[0];
-	clock_gettime (CLOCK_MONOTONIC, &proc->time);
 	/* now do the fork */
 	proc->pid = fork ();
 	/* XXX */
 	if (proc->pid == -1)
 		goto fail;
-	if (proc->pid) {
-		/* we are the parent, so close the writers */
-		closefd (out[1]);
-		closefd (err[1]);
-		FD_SET (proc->outfd, &readfds);
-		FD_SET (proc->errfd, &errorfds);
-	} else {
+	if (!proc->pid) {
+		/* child */
 		char path[128];
 		/*
 		struct rlimit mem;
@@ -254,24 +245,25 @@ struct subproc *runevent (const struct passwd *pw, char * const *argv, char * co
 		/* set up env */
 		if (clearenv () != 0)
 			exit (EXIT_FAILURE);
-		for (; **env; env++)
-			putenv (*env);
 		/* set up env: USER, LOGNAME, HOME, PATH, whatever else */
-		penv ("USER", pw->pw_name);
-		penv ("LOGNAME", pw->pw_name);
-		penv ("HOME", pw->pw_dir);
-		confstr (_CS_PATH, path, sizeof (path));
-		penv ("PATH", path);
 		for (; *env; env++)
 			putenv (*env);
+		setenv ("USER", pw->pw_name, 1);
+		setenv ("LOGNAME", pw->pw_name, 1);
+		setenv ("HOME", pw->pw_dir, 1);
+		confstr (_CS_PATH, path, sizeof (path));
+		setenv ("PATH", path, 1);
 		execv (argv[0], argv);
 		/* exec failed */
 		exit (EXIT_FAILURE);
 	}
-	/* doubly linked list */
-	proc->prev = tail;
-	tail = proc;
-	numprocs++;
+	/* we are the parent, so close the writers */
+	closefd (out[1]);
+	closefd (err[1]);
+	SETFDS (proc->outfd, proc->errfd);
+	clock_gettime (CLOCK_MONOTONIC, &proc->time);
+	proc->time.tv_sec += PROCRUNTIME;
+	heapup (heap, proc);
 	return proc;
 	fail:
 	/* avoid hitting fd limit */
@@ -284,47 +276,238 @@ struct subproc *runevent (const struct passwd *pw, char * const *argv, char * co
 }
 
 void cleanchild (const struct subproc *proc) {
-	numprocs--;
-	FD_CLR (proc->outfd, &readfds);
-	FD_CLR (proc->errfd, &errorfds);
-	/* report */
+	CLRFDS (proc->outfd, proc->errfd);
 }
 
-#define SPLICELL(ll) do { \
-	if (tail == (ll)) tail = (ll)->prev; \
-	if ((ll)->prev) (ll)->prev->next = (ll)->next; \
-	if ((ll)->next) (ll)->next->prev = (ll)->prev; \
-} while (0)
+struct heaparg {
+	pid_t pid;
+	struct subproc *proc;
+};
+
+int spdel (const struct subproc *proc, struct heaparg *arg) {
+	if (proc->pid == arg->pid) {
+		arg->proc = proc;
+		return 1;
+	}
+	return 0;
+}
 
 void chld (int signum, siginfo_t *sinfo, void *unused) {
 	struct subproc *proc;
+	struct heaparg arg;
 	/* this should only be ours, but if not, still need to reap */
-	pid_t pid;
-	int status, code;
-	int serrno = errno;
+	int status;
 	if (sinfo->si_code != CLD_EXITED)
 		return;
-	pid = sinfo->si_pid;
-	if (waitpid (pid, &status, 0) == -1)
+	arg.pid = sinfo->si_pid;
+	if (waitpid (arg.pid, &status, 0) == -1)
 		return;
 	if (!WIFEXITED (status))
 		return;
 	/* also WIFSIGNALED(status) and WTERMSIG(status) to get signal */
 	code = WEXITSTATUS (status);
-	errno = serrno;
-	for (proc = tail; proc; proc = proc->prev) {
-		if (proc->pid == pid) {
-			SPLICELL (proc);
-			cleanchild (proc);
-			free (proc);
-			break;
+	if (heapdelete (heap, spdel, &arg)) {
+		int code;
+		cleanchild (arg.proc);
+		free (arg.proc);
+		if ((code = WEXITSTATUS (status)) != EXIT_SUCCESS) {
+			/* log this */
+		}
+	} else {
+		/* log this */
+		/* except that there may be many subprocesses, since we have to
+		use sendmail */
+	}
+}
+
+int _newlen (size_t *len, const size_t min) {
+	if (*len >= min)
+		return 0;
+	do {
+		*len *= 2;
+	} while (*len < min);
+	return 1;
+}
+
+char *evtpath (const struct passwd *pw) {
+	static size_t len = 128;
+	static char *path = malloc (len);
+	ssize_t i = 0;
+	/* path components:
+	0         1 2      3      4   5
+	SYSEVTDIR / evt    EVTEXT
+	home      / EVTDIR /      evt EVTEXT */
+#define MAXEVTCOMPS 6
+	char *paths[MAXEVTCOMPS];
+	size_t lens[MAXEVTCOMPS], maxlen = 0;
+#undef MAXEVTCOMPS
+/* maxlen += (lens[i] = strlen ((paths[i] = (comp)))), i++; */
+#define EVTCOMP(comp) do { \
+	paths[i] = (comp); \
+	lens[i] = strlen (paths[i]); \
+	maxlen += lens[i]; \
+	i++; \
+} while (0)
+	/* XXX */
+	if (!path)
+		exit (EXIT_FAILURE);
+	if (pw) {
+		EVTCOMP (pw->pw_home);
+		EVTCOMP ("/")
+		EVTCOMP (EVTDIR);
+		EVTCOMP ("/")
+		EVTCOMP (evt);
+		EVTCOMP (EVTEXT);
+	} else {
+		EVTCOMP (SYSEVTDIR);
+		EVTCOMP ("/");
+		EVTCOMP (evt);
+		EVTCOMP (EVTEXT);
+	}
+#undef EVTCOMP
+	if (_newlen (&len, maxlen + 1)) {
+		/* XXX */
+		if (!(path = realloc (path, len)))
+			exit (EXIT_FAILURE);
+	}
+	path[maxlen] = '\0';
+	for (i--; i >= 0; maxlen -= lens[i], i--)
+		memcpy (path + maxlen - lens[i], paths[i], lens[i]);
+	return path;
+}
+
+void tsdiff (struct timespec *dest, struct timespec *a, struct timespec *b) {
+	long nsec = a->tv_nsec - b->tv_nsec;
+	dest->tv_sec = a->tv_sec - b->tv_sec;
+	if (nsec < 0) {
+		nsec += 1000000000L;
+		dest->tv_sec--;
+	}
+	desc->tv_nsec = nsec;
+}
+
+struct spout {
+	int num;
+	fd_set readfds, errorfds;
+};
+int spoutput (struct subproc *proc, struct spout *output) {
+	/* TODO */
+	if (FD_ISSET (proc->outfd, &output->readfds)) {
+		output->num--;
+	}
+	if (FD_ISSET (proc->errfd, &output->errorfds)) {
+		output->num--;
+	}
+	return 1;
+}
+
+/*
+simplest way to do this is if this is called as
+runevent evtname envname=value...
+or runevent evtname args...
+either way, different events will have different semantics
+*/
+/*
+1. get UID_MIN/MAX from login.defs
+2. register CHLD handler
+3. run system handler
+4. getpwent()
+5. if there are users to try
+a.	if there are slots available, run handler
+6. if there are processes running
+a.	select() on subprocs' fds and next signal time
+*/
+int main (int argc, char **argv) {
+	struct sigaction sa;
+	struct passwd *pw;
+	struct timespec now;
+	struct subproc *proc;
+	struct stat f;
+	int i = 1, done = 0;
+	char *args[2], *env[argc - i];
+
+	/* set up argv and env */
+	evt = argv[i];
+	/* argv[0] will be set below */
+	args[1] = NULL;
+	for (; i < argc; i++)
+		env[i] = argv[i];
+	env[i] = NULL;
+
+	getuidrange ();
+
+	/* register SIGCHLD handler */
+	sa.sa_flags = SA_SIGINFO;
+	sa.sa_sigaction = chld;
+	sigemptyset (&sa.sa_mask)
+	/* XXX */
+	if (sigaction (SIGCHLD, &sa, NULL) == -1)
+		return EXIT_FAILURE;
+
+	/* set up our priority queue */
+	heap = heapalloc (-1, MAXPROCS, sizeof (struct subproc *), spcmp);
+
+	clock_gettime (CLOCK_MONOTONIC, &now);
+
+	/* try running system event handler */
+	args[0] = evtpath (NULL);
+	if (stat (args[0], &f) == 0) {
+		if (!(proc = runevent (NULL, args, env))) {
+			/* log this */
+		}
+	}
+
+	/* now the main loop */
+	while (1) {
+		clock_gettime (CLOCK_MONOTONIC, &now);
+		if (done || heapcount (heap) == MAXPROCS) {
+			struct timespec timeout;
+			struct spout output;
+			if (!heappeek (heap, &proc))
+				break;
+			output.readfds = readfds;
+			output.errorfds = errorfds;
+			tsdiff (&timeout, &proc->time, &now);
+			if (timeout.tv_sec < 0) {
+				if (proc->status == RUNNING) {
+					kill (proc->pid, SIGTERM);
+					heapdown (heap, NULL);
+					memcpy (&proc->time, &now, sizeof (now));
+					proc->time.tv_sec += PROCSIGTIME;
+					proc->status = SIGNALLED;
+					heapup (heap, &proc);
+					/* will CHLD get delivered? */
+					/*waitpid (proc->pid, &i, 0);*/
+				} else {
+					kill (proc->pid, SIGKILL);
+				}
+				/* timeout is negative, so don't select() */
+				/* if we just sent KILL, we might not get the
+				CHLD right away. maybe waitpid()? */
+				continue;
+			}
+			output.num = pselect (nfds, &rfd, NULL, &efd, &timeout, NULL);
+			while (output.num) {
+				i = heapsearch (heap, NULL, i, spoutput, &output);
+				/* this should not happen */
+				if (i < 0)
+					break;
+			}
+			continue;
+		}
+		if (!(pw = getpwent ())) {
+			done = 1;
+			endpwent ();
+			continue;
+		}
+		if (!USEROK (pw))
+			continue;
+		/* run user handler */
+		args[0] = evtpath (pw);
+		if (stat (args[0], &f) == 0) {
+			if (!(proc = runevent (NULL, args, env))) {
+				/* log this */
+			}
 		}
 	}
 }
-/*
-struct sigaction sa;
-sa.sa_flags = SA_SIGINFO;
-sa.sa_sigaction = chld;
-sigemptyset (&sa.sa_mask);
-if (sigaction (SIGCHLD, &sa, NULL) == -1) ...
-*/
