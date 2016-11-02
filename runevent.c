@@ -69,6 +69,10 @@ static uid_t uidmin = (uid_t)INT_MIN, uidmax = (uid_t)INT_MAX;
 #define PROCSIGTIME 5
 #endif
 
+#ifndef MAILER
+#define MAILER "/usr/bin/mail"
+#endif
+
 char *skipspaces (char *s, int n) {
 	while (*s && isspace (*s))
 		s += n;
