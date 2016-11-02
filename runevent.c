@@ -179,10 +179,11 @@ static bheap_t *heap;
 	FD_CLR (e, &errorfds); \
 } while (0)
 
-int spcmp (const struct subproc *a, const struct subproc *b) {
-	return a->time->tv_sec == b->time->tv_sec ?
-		a->time->tv_nsec - b->time->tv_nsec :
-		a->time->tv_sec - b->time->tv_sec;
+int spcmp (const void *arg1, const void *arg2) {
+	const struct subproc *a = arg1, *b = arg2;
+	return a->time.tv_sec == b->time.tv_sec ?
+		a->time.tv_nsec - b->time.tv_nsec :
+		a->time.tv_sec - b->time.tv_sec;
 }
 
 /*
@@ -284,7 +285,9 @@ struct heaparg {
 	struct subproc *proc;
 };
 
-int spdel (const struct subproc *proc, struct heaparg *arg) {
+int spdel (const void *arg1, void *arg2) {
+	struct subproc *proc = (struct subproc *)arg1;
+	struct heaparg *arg = arg2;
 	if (proc->pid == arg->pid) {
 		arg->proc = proc;
 		return 1;
@@ -293,7 +296,6 @@ int spdel (const struct subproc *proc, struct heaparg *arg) {
 }
 
 void chld (int signum, siginfo_t *sinfo, void *unused) {
-	struct subproc *proc;
 	struct heaparg arg;
 	/* this should only be ours, but if not, still need to reap */
 	int status;
@@ -305,7 +307,6 @@ void chld (int signum, siginfo_t *sinfo, void *unused) {
 	if (!WIFEXITED (status))
 		return;
 	/* also WIFSIGNALED(status) and WTERMSIG(status) to get signal */
-	code = WEXITSTATUS (status);
 	if (heapdelete (heap, spdel, &arg)) {
 		int code;
 		cleanchild (arg.proc);
@@ -330,8 +331,8 @@ int _newlen (size_t *len, const size_t min) {
 }
 
 char *evtpath (const struct passwd *pw) {
-	static size_t len = 128;
-	static char *path = malloc (len);
+	static size_t len = 0;
+	static char *path = NULL;
 	ssize_t i = 0;
 	/* path components:
 	0         1 2      3      4   5
@@ -348,14 +349,11 @@ char *evtpath (const struct passwd *pw) {
 	maxlen += lens[i]; \
 	i++; \
 } while (0)
-	/* XXX */
-	if (!path)
-		exit (EXIT_FAILURE);
 	if (pw) {
-		EVTCOMP (pw->pw_home);
-		EVTCOMP ("/")
+		EVTCOMP (pw->pw_dir);
+		EVTCOMP ("/");
 		EVTCOMP (EVTDIR);
-		EVTCOMP ("/")
+		EVTCOMP ("/");
 		EVTCOMP (evt);
 		EVTCOMP (EVTEXT);
 	} else {
@@ -366,8 +364,9 @@ char *evtpath (const struct passwd *pw) {
 	}
 #undef EVTCOMP
 	if (_newlen (&len, maxlen + 1)) {
+		path = path ? realloc (path, len) : malloc (len) ;
 		/* XXX */
-		if (!(path = realloc (path, len)))
+		if (!path)
 			exit (EXIT_FAILURE);
 	}
 	path[maxlen] = '\0';
@@ -383,14 +382,16 @@ void tsdiff (struct timespec *dest, struct timespec *a, struct timespec *b) {
 		nsec += 1000000000L;
 		dest->tv_sec--;
 	}
-	desc->tv_nsec = nsec;
+	dest->tv_nsec = nsec;
 }
 
 struct spout {
 	int num;
 	fd_set readfds, errorfds;
 };
-int spoutput (struct subproc *proc, struct spout *output) {
+int spoutput (const void *arg1, void *arg2) {
+	struct subproc *proc = (struct subproc *)arg1;
+	struct spout *output = arg2;
 	/* TODO */
 	if (FD_ISSET (proc->outfd, &output->readfds)) {
 		output->num--;
@@ -439,7 +440,7 @@ int main (int argc, char **argv) {
 	/* register SIGCHLD handler */
 	sa.sa_flags = SA_SIGINFO;
 	sa.sa_sigaction = chld;
-	sigemptyset (&sa.sa_mask)
+	sigemptyset (&sa.sa_mask);
 	/* XXX */
 	if (sigaction (SIGCHLD, &sa, NULL) == -1)
 		return EXIT_FAILURE;
@@ -469,12 +470,12 @@ int main (int argc, char **argv) {
 			output.errorfds = errorfds;
 			tsdiff (&timeout, &proc->time, &now);
 			if (timeout.tv_sec < 0) {
-				if (proc->status == RUNNING) {
+				if (proc->status == SPRUN) {
 					kill (proc->pid, SIGTERM);
 					heapdown (heap, NULL);
 					memcpy (&proc->time, &now, sizeof (now));
 					proc->time.tv_sec += PROCSIGTIME;
-					proc->status = SIGNALLED;
+					proc->status = SPSIG;
 					heapup (heap, &proc);
 					/* will CHLD get delivered? */
 					/*waitpid (proc->pid, &i, 0);*/
@@ -486,7 +487,9 @@ int main (int argc, char **argv) {
 				CHLD right away. maybe waitpid()? */
 				continue;
 			}
-			output.num = pselect (nfds, &rfd, NULL, &efd, &timeout, NULL);
+			output.num = pselect (nfds,
+				&output.readfds, NULL, &output.errorfds,
+				&timeout, NULL);
 			while (output.num) {
 				i = heapsearch (heap, NULL, i, spoutput, &output);
 				/* this should not happen */
@@ -510,4 +513,5 @@ int main (int argc, char **argv) {
 			}
 		}
 	}
+	return 1;
 }
