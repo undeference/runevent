@@ -16,6 +16,7 @@
 #include <errno.h>
 #include <syslog.h>
 #include <signal.h>
+#include <fcntl.h>
 
 /* specify -I or -L or whatever it is */
 #include <bheap.h>
@@ -73,6 +74,14 @@ static uid_t uidmin = (uid_t)INT_MIN, uidmax = (uid_t)INT_MAX;
 #define MAILER "/usr/bin/mail"
 #endif
 
+#ifndef NDEBUG
+#define DEBUG(f,...) \
+	fprintf (stderr, "%s:%d %s() " f "\n", \
+		__FILE__, __LINE__, __func__, ##__VA_ARGS__)
+#else
+#define DEBUG(f,...)
+#endif
+
 char *skipspaces (char *s, int n) {
 	while (*s && isspace (*s))
 		s += n;
@@ -100,7 +109,6 @@ int getuidrange (void) {
 		/* find whitespace */
 		if (!(c = strpbrk (p, "\t\v\f ")))
 			continue;
-		c++;
 		if ((l = c - p) == 0)
 			continue;
 		if (strncmp (p, LOGIN_UID_MIN, l) == 0)
@@ -109,8 +117,8 @@ int getuidrange (void) {
 			bound = &uidmax;
 		else
 			continue;
+		c = skipspaces (c + 1, 1);
 		/* assume it's a real number */
-		c = skipspaces (c, 1);
 		*bound = (uid_t)atol (c);
 	}
 	fclose (defs);
@@ -150,138 +158,190 @@ void closefrom (int min) {
 	closedir (d);
 }
 
-/* keep track of everything we need to keep track of for subprocs */
-struct subproc {
+pid_t open3 (int *cin, int *cout, int *cerr, const struct passwd *pw, const char *dir, char * const *argv, char * const *env) {
+	int in[2] = {-1}, out[2] = {-1}, err[2] = {-1};
 	pid_t pid;
-	uid_t uid;
-	gid_t gid;
-	/* readers for stdout and stderr */
-	int outfd, errfd;
-	/*
-	 * if status == SPRUN then time is when the program started
-	 * if status == SPSIG then time is when the program was signaled
-	 */
-	enum { SPRUN, SPSIG } status;
-	/* clock_gettime(CLOCK_MONOTONIC) */
-	struct timespec time;
-};
-
-static char *evt;
-static fd_set readfds, errorfds;
-static int nfds = 0;
-static bheap_t *heap;
-
-#define SETFDS(r,e) do { \
-	if (r >= nfds) nfds = r + 1; \
-	if (e >= nfds) nfds = e + 1; \
-	FD_SET (r, &readfds); \
-	FD_SET (e, &errorfds); \
+#define PIPEX(fd) do { \
+	if ((c##fd) && pipe (fd) != 0) \
+		goto fail; \
 } while (0)
-/* doesn't adjust nfds (yet?) */
-#define CLRFDS(r,e) do { \
-	FD_CLR (r, &readfds); \
-	FD_CLR (e, &errorfds); \
-} while (0)
-
-int spcmp (const void *arg1, const void *arg2) {
-	const struct subproc *a = arg1, *b = arg2;
-	return a->time.tv_sec == b->time.tv_sec ?
-		a->time.tv_nsec - b->time.tv_nsec :
-		a->time.tv_sec - b->time.tv_sec;
-}
-
-/*
- * Do nothing if there is no event handler
- * Drop privileges
- * pipe() for child stdout and stderr
- * if (fork())
- *	close writers
- *	register
- * else
- *	close readers
- *	close all other fds other than stdout, stderr
- *	clean environment
- *	ulimit
- *	execve()
- */
-struct subproc *runevent (const struct passwd *pw, char * const *argv, char * const *env) {
-	struct subproc *proc = calloc (1, sizeof (struct subproc));
-	int out[2], err[2];
-	proc->status = SPRUN;
-	if (pw) {
-		proc->uid = pw->pw_uid;
-		proc->gid = pw->pw_gid;
-	}
-	/* set up pipes for stdout, stderr */
-	if (pipe (out) != 0 || pipe (err) != 0)
+	PIPEX (in);
+	PIPEX (out);
+	PIPEX (err);
+#undef PIPEX
+	DEBUG ("run '%s' as '%s' (%d:%d)", argv[0], pw ? pw->pw_name : "root", pw ? pw->pw_uid : 0, pw ? pw->pw_gid : 0);
+	if ((pid = fork ()) == -1)
 		goto fail;
-	proc->outfd = out[0];
-	proc->errfd = err[0];
-	/* now do the fork */
-	proc->pid = fork ();
-	/* XXX */
-	if (proc->pid == -1)
-		goto fail;
-	if (!proc->pid) {
+	if (pid == 0) {
 		/* child */
 		char path[128];
-		/*
-		struct rlimit mem;
-		mem.rlim_cur = mem.rlim_max = 128 << 20;
-		setrlimit (RLIMIT_RSS, &mem);
-		*/
-		/* chdir() to user's home (or / for system) */
-		if (chdir (pw ? pw->pw_dir : SYSDIR) != 0)
+		if (dir && chdir (dir) != 0)
 			exit (EXIT_FAILURE);
-		/* drop privileges */
-		if (setgid (proc->gid) != 0 || setuid (proc->uid) != 0)
-			exit (EXIT_FAILURE);
-		/* may need to know about root */
 		if (!pw)
-			pw = getpwuid (proc->uid);
-		/* we are the child, so close the readers */
-		closefd (out[0]);
-		closefd (err[0]);
-		/* dup to stdout and stderr */
-		dupfd (out[1], 1);
-		dupfd (err[1], 2);
-		/* and close all other descriptors */
+			pw = getpwuid (0);
+		/* drop privileges */
+		else if (setgid (pw->pw_gid) != 0 || setuid (pw->pw_uid) != 0)
+			exit (EXIT_FAILURE);
+		/* close unneeded fds */
+#define CLODUP(fd,n,x) do { \
+	if ((fd)[0] > -1) { \
+		closefd ((fd)[x]); \
+		dupfd ((fd)[!x], n); \
+	} \
+} while (0)
+		/* close stdin writer, stdout and stderr readers */
+		CLODUP (in, STDIN_FILENO, 1);
+		CLODUP (out, STDOUT_FILENO, 0);
+		CLODUP (err, STDERR_FILENO, 0);
+#undef CLODUP
+		/* close others */
 		closefrom (3);
-		/* set up env */
+		/* set up the env */
 		if (clearenv () != 0)
 			exit (EXIT_FAILURE);
-		/* set up env: USER, LOGNAME, HOME, PATH, whatever else */
-		for (; *env; env++)
-			putenv (*env);
+		if (env) {
+			for (; *env; env++)
+				putenv (*env);
+		}
+		/* set up USER, LOGNAME, HOME, PATH */
 		setenv ("USER", pw->pw_name, 1);
 		setenv ("LOGNAME", pw->pw_name, 1);
 		setenv ("HOME", pw->pw_dir, 1);
 		confstr (_CS_PATH, path, sizeof (path));
 		setenv ("PATH", path, 1);
 		execv (argv[0], argv);
-		/* exec failed */
+		fprintf (stderr, "'%s' failed: %s", argv[0], strerror (errno));
+		/* should not happen */
 		exit (EXIT_FAILURE);
 	}
-	/* we are the parent, so close the writers */
-	closefd (out[1]);
-	closefd (err[1]);
-	SETFDS (proc->outfd, proc->errfd);
+	/* parent */
+	DEBUG ("pid=%d", pid);
+#define CLOCP(fd,x) do { \
+	if (c##fd) { \
+		closefd ((fd)[x]); \
+		*(c##fd) = (fd)[!x]; \
+	} \
+} while (0)
+	/* close stdin writer, stdout and stderr readers */
+	CLOCP (in, 0);
+	CLOCP (out, 1);
+	CLOCP (err, 1);
+	return pid;
+#undef CLOCP
+	fail:
+#define CLOSEFDS(fd) do { \
+	if ((c##fd) && (fd)[0] != -1) { \
+		closefd ((fd)[0]); \
+		closefd ((fd)[1]); \
+		*(c##fd) = -1; \
+	} \
+} while (0)
+	CLOSEFDS (in);
+	CLOSEFDS (out);
+	CLOSEFDS (err);
+#undef CLOSEFDS
+	return -1;
+}
+
+/* keep track of everything we need to keep track of for subprocs */
+struct subproc {
+	pid_t pid;
+	uid_t uid;
+	gid_t gid;
+	/* readers for stdout and stderr */
+	int readfd, errorfd;
+	/*
+	 * if status == SPRUN, signal with TERM
+	 * if status == SPSIG, signal with KILL
+	 */
+	enum { SPRUN, SPSIG } status;
+	/* clock_gettime(CLOCK_MONOTONIC) */
+	struct timespec time;
+	/* ??? */
+	struct {
+		pid_t pid;
+		int infd;
+	} mail;
+};
+
+int initmail (struct subproc *proc, const char *subject) {
+	struct passwd *pw;
+	/* How many arguments to the mailer?
+	 * 1             2  3         4  5    6
+	 * /usr/bin/mail -s "subject" -- user NULL
+	 */
+	char *args[6];
+	if (proc->mail.pid)
+		return proc->mail.pid;
+	if (!(pw = getpwuid (proc->uid)))
+		return -1;
+	args[0] = MAILER;
+	args[1] = "-s";
+	args[2] = (char *)subject;
+	args[3] = "--";
+	args[4] = pw->pw_name;
+	args[5] = NULL;
+	proc->mail.pid = open3 (&proc->mail.infd, NULL, NULL, pw, NULL, (char * const *)args, NULL);
+	return proc->mail.pid;
+}
+
+static char *evt;
+static fd_set fdset;
+static int nfds = 0;
+static bheap_t *heap;
+
+#define SETFDS(r,e) do { \
+	if ((r) >= nfds) nfds = (r) + 1; \
+	if ((e) >= nfds) nfds = (e) + 1; \
+	FD_SET (r, &fdset); \
+	FD_SET (e, &fdset); \
+} while (0)
+/* doesn't adjust nfds (yet?) */
+#define CLRFDS(r,e) do { \
+	FD_CLR (r, &fdset); \
+	FD_CLR (e, &fdset); \
+} while (0)
+
+int spcmp (const void *arg1, const void *arg2) {
+	const struct subproc *a = *(const struct subproc **)arg1,
+		*b = *(const struct subproc **)arg2;
+	return a->time.tv_sec == b->time.tv_sec ?
+		a->time.tv_nsec - b->time.tv_nsec :
+		a->time.tv_sec - b->time.tv_sec;
+}
+
+struct subproc *runevent (const struct passwd *pw, char * const *argv, char * const *env) {
+	struct subproc *proc = calloc (1, sizeof (struct subproc));
+	proc->mail.pid = -1;
+	proc->status = SPRUN;
+	if (pw) {
+		proc->uid = pw->pw_uid;
+		proc->gid = pw->pw_gid;
+	}
+	proc->pid = open3 (NULL, &proc->readfd, &proc->errorfd, pw,
+		pw ? pw->pw_dir : SYSDIR,
+		argv, env);
+	/* XXX */
+	if (proc->pid == -1)
+		goto fail;
+	DEBUG ("open3 '%s' pid %d with stdout piped to %d and stderr to %d", argv[0], proc->pid, proc->readfd, proc->errorfd);
+	SETFDS (proc->readfd, proc->errorfd);
 	clock_gettime (CLOCK_MONOTONIC, &proc->time);
 	proc->time.tv_sec += PROCRUNTIME;
-	heapup (heap, proc);
+	heapup (heap, &proc);
 	return proc;
 	fail:
-	/* avoid hitting fd limit */
-	closefd (out[0]);
-	closefd (out[1]);
-	closefd (err[0]);
-	closefd (err[1]);
 	free (proc);
 	return NULL;
 }
 
-void cleanchild (const struct subproc *proc) {
-	CLRFDS (proc->outfd, proc->errfd);
+void cleanchild (struct subproc *proc) {
+	DEBUG ("reap %d", proc->pid);
+	CLRFDS (proc->readfd, proc->errorfd);
+	if (proc->mail.pid > 0) {
+		closefd (proc->mail.infd);
+		proc->mail.pid = -1;
+	}
 }
 
 struct heaparg {
@@ -290,7 +350,7 @@ struct heaparg {
 };
 
 int spdel (const void *arg1, void *arg2) {
-	struct subproc *proc = (struct subproc *)arg1;
+	struct subproc *proc = *(struct subproc **)arg1;
 	struct heaparg *arg = arg2;
 	if (proc->pid == arg->pid) {
 		arg->proc = proc;
@@ -303,26 +363,34 @@ void chld (int signum, siginfo_t *sinfo, void *unused) {
 	struct heaparg arg;
 	/* this should only be ours, but if not, still need to reap */
 	int status;
-	if (sinfo->si_code != CLD_EXITED)
-		return;
+	int sen = errno;
+	DEBUG ("si_code %d == CLD_EXITED? %d", sinfo->si_code, sinfo->si_code == CLD_EXITED);
+	/* actually don't care if it was stopped or the like */
 	arg.pid = sinfo->si_pid;
-	if (waitpid (arg.pid, &status, 0) == -1)
-		return;
-	if (!WIFEXITED (status))
-		return;
+	DEBUG ("pid %d", arg.pid);
+	if (waitpid (arg.pid, &status, 0) == -1) {
+		DEBUG ("waitpid failed: %s", strerror (errno));
+		goto done;
+	}
+	DEBUG ("status = %d, exited = %d", status, WIFEXITED (status));
 	/* also WIFSIGNALED(status) and WTERMSIG(status) to get signal */
+	DEBUG ("process %d exited with status %d", arg.pid, WEXITSTATUS (status));
 	if (heapdelete (heap, spdel, &arg)) {
 		int code;
-		cleanchild (arg.proc);
-		free (arg.proc);
 		if ((code = WEXITSTATUS (status)) != EXIT_SUCCESS) {
 			/* log this */
 		}
+		DEBUG ("%d is ours", arg.pid);
+		cleanchild (arg.proc);
+		free (arg.proc);
 	} else {
+		DEBUG ("%d is not ours?!", arg.pid);
 		/* log this */
 		/* except that there may be many subprocesses, since we have to
 		use sendmail */
 	}
+	done:
+	errno = sen;
 }
 
 int _newlen (size_t *len, const size_t min) {
@@ -391,21 +459,40 @@ void tsdiff (struct timespec *dest, struct timespec *a, struct timespec *b) {
 	dest->tv_nsec = nsec;
 }
 
+static int validfd (int fd) {
+	return fcntl (fd, F_GETFD) != -1 || errno != EBADF;
+}
+
+static void readfd (int *fd, fd_set *fds, int *num) {
+	if (*fd >= 0 && FD_ISSET (*fd, fds)) {
+		char buf[1024];
+		ssize_t n;
+		do {
+			n = read (*fd, buf, sizeof (buf) - 1);
+			buf[n < 0 ? 0 : n] = '\0';
+			DEBUG ("read %d of %d >>> %s", *fd, (int)n, buf);
+		} while ((n == -1 && errno == EINTR) || n == sizeof (buf) - 1);
+		if (n == 0) {
+			DEBUG ("eof %d", *fd);
+			FD_CLR (*fd, &fdset);
+			*fd = -1;
+		}
+		(*num)--;
+	}
+}
+
 struct spout {
 	int num;
-	fd_set readfds, errorfds;
+	fd_set fdset;
 };
 int spoutput (const void *arg1, void *arg2) {
-	struct subproc *proc = (struct subproc *)arg1;
+	struct subproc *proc = *(struct subproc **)arg1;
 	struct spout *output = arg2;
 	/* TODO */
-	if (FD_ISSET (proc->outfd, &output->readfds)) {
-		output->num--;
-	}
-	if (FD_ISSET (proc->errfd, &output->errorfds)) {
-		output->num--;
-	}
-	return 1;
+	DEBUG ("test %d and %d in set", proc->readfd, proc->errorfd);
+	readfd (&proc->readfd, &output->fdset, &output->num);
+	readfd (&proc->errorfd, &output->fdset, &output->num);
+	return 0;
 }
 
 /*
@@ -445,10 +532,13 @@ int main (int argc, char **argv) {
 		env[i] = argv[i];
 	env[i] = NULL;
 
+	FD_ZERO (&fdset);
+
 	getuidrange ();
+	DEBUG ("got UID range %d-%d", uidmin, uidmax);
 
 	/* register SIGCHLD handler */
-	sa.sa_flags = SA_SIGINFO;
+	sa.sa_flags = SA_NOCLDSTOP | SA_SIGINFO;
 	sa.sa_sigaction = chld;
 	sigemptyset (&sa.sa_mask);
 	/* XXX */
@@ -462,6 +552,7 @@ int main (int argc, char **argv) {
 
 	/* try running system event handler */
 	args[0] = evtpath (NULL);
+	DEBUG ("does '%s' exist?", args[0]);
 	if (stat (args[0], &f) == 0) {
 		if (!(proc = runevent (NULL, args, env))) {
 			/* log this */
@@ -476,36 +567,39 @@ int main (int argc, char **argv) {
 			struct spout output;
 			if (!heappeek (heap, &proc))
 				break;
-			output.readfds = readfds;
-			output.errorfds = errorfds;
+			output.fdset = fdset;
 			tsdiff (&timeout, &proc->time, &now);
 			if (timeout.tv_sec < 0) {
 				if (proc->status == SPRUN) {
 					kill (proc->pid, SIGTERM);
 					heapdown (heap, NULL);
-					memcpy (&proc->time, &now, sizeof (now));
+					proc->time = now;
 					proc->time.tv_sec += PROCSIGTIME;
 					proc->status = SPSIG;
 					heapup (heap, &proc);
-					/* will CHLD get delivered? */
-					/*waitpid (proc->pid, &i, 0);*/
 				} else {
+					/* if we just sent KILL, we might not
+					get SIGCHLD right away
+					will we get SIGCHLD if we waitpid()? */
 					kill (proc->pid, SIGKILL);
+					/*waitpid (proc->pid, &i, 0);*/
 				}
 				/* timeout is negative, so don't select() */
-				/* if we just sent KILL, we might not get the
-				CHLD right away. maybe waitpid()? */
 				continue;
 			}
-			output.num = pselect (nfds,
-				&output.readfds, NULL, &output.errorfds,
-				&timeout, NULL);
-			while (output.num) {
-				i = heapsearch (heap, NULL, i, spoutput, &output);
-				/* this should not happen */
-				if (i < 0)
-					break;
+			DEBUG ("pselect with timeout in %d.%09ds", (int)timeout.tv_sec, (int)timeout.tv_nsec);
+			do {
+				output.num = pselect (nfds,
+					&output.fdset, NULL, NULL /* check too? */,
+					&timeout, NULL);
+			} while (output.num == -1 && errno == EINTR);
+			DEBUG ("pselect returns %d", output.num);
+			if (output.num < 0) {
+				DEBUG ("pselect error: %s", strerror (errno));
+				continue;
 			}
+			/* iterate over items in the heap */
+			heapsearch (heap, NULL, 0, spoutput, &output);
 			continue;
 		}
 		if (!(pw = getpwent ())) {
@@ -517,8 +611,9 @@ int main (int argc, char **argv) {
 			continue;
 		/* run user handler */
 		args[0] = evtpath (pw);
+		DEBUG ("does '%s' exist?", args[0]);
 		if (stat (args[0], &f) == 0) {
-			if (!(proc = runevent (NULL, args, env))) {
+			if (!(proc = runevent (pw, args, env))) {
 				/* log this */
 			}
 		}
