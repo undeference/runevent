@@ -21,57 +21,8 @@
 /* specify -I or -L or whatever it is */
 #include <bheap.h>
 
-#ifndef LOGINDEFS
-#define LOGINDEFS "/etc/login.defs"
-#endif
-
-#define LOGIN_UID_MIN "UID_MIN"
-#define LOGIN_UID_MAX "UID_MAX"
-static uid_t uidmin = (uid_t)INT_MIN, uidmax = (uid_t)INT_MAX;
-
-#define USEROK(u) ((u)->pw_uid >= uidmin && (u)->pw_uid <= uidmax)
-
-/* chdir here for system handlers */
-#ifndef SYSDIR
-#define SYSDIR "/"
-#endif
-
-/* path to system handler directory */
-#ifndef SYSEVTDIR
-#define SYSEVTDIR "/etc/events.d"
-#endif
-
-/* name of directory containing users' handlers */
-#ifndef EVTDIR
-#define EVTDIR "events.d"
-#endif
-
-/* these should maybe be in a config file (use login.defs format) */
-/* event handlers end with this */
-#ifndef EVTEXT
-#define EVTEXT ".handler"
-#endif
-
-/* maximum number of handlers (for the same event) to run simultaneously */
-#ifndef MAXPROCS
-#define MAXPROCS 4
-#endif
-#if MAXPROCS < 1
-#error "MAXPROCS must be at least 1"
-#endif
-
-/* how long a handler is allowed to run */
-#ifndef PROCRUNTIME
-#define PROCRUNTIME 120
-#endif
-
-/* maximum time to wait for a signalled handler to terminate */
-#ifndef PROCSIGTIME
-#define PROCSIGTIME 5
-#endif
-
-#ifndef MAILER
-#define MAILER "/usr/bin/mail"
+#ifndef CONFIGFILE
+#define CONFIGFILE "/etc/runevents.conf"
 #endif
 
 #ifndef NDEBUG
@@ -88,43 +39,168 @@ char *skipspaces (char *s, int n) {
 	return s;
 }
 
-int getuidrange (void) {
+/*
+ * configuration format similar to login.defs
+ * KEY  "value" # comment
+ */
+
+enum {
+	T_FREE,
+	T_INT,
+	T_STR
+};
+
+struct conf {
+	char *name;
+	int type;
+	char *str;
+	int value;
+};
+
+int confcmp (const void *name, const void *c) {
+	return strcmp ((const char *)name, ((const struct conf *)c)->name);
+}
+
+struct conf *_cget (const char *name, struct conf **c, size_t num, size_t sz) {
+	return (struct conf *)bsearch (name, c, num, sz, confcmp);
+}
+
+int parseconfig (const char *file, struct conf **config, size_t num, size_t sz) {
+	struct conf *cfg;
 	ssize_t r;
 	size_t n = 0;
 	char *line = NULL;
-	FILE *defs = fopen (LOGINDEFS, "r");
-	if (!defs)
-		return -1;
-	while ((r = getline (&line, &n, defs)) != -1) {
+	FILE *f = fopen (file, "r");
+	if (!f)
+		return 0;
+
+	while ((r = getline (&line, &n, f)) != -1) {
 		char *p, *c;
 		size_t l;
-		uid_t *bound;
+
 		if (r == 0)
 			continue;
+
 		p = skipspaces (line, 1);
 		if ((c = strpbrk (p, "\n#")))
 			r = c - p;
 		else
 			r -= p - line;
-		/* find whitespace */
+
+		if (r == 0)
+			continue;
+
+		*c = '\0';
+
+		/* find whitespace after key */
 		if (!(c = strpbrk (p, "\t\v\f ")))
 			continue;
+
+		/* length of name */
 		if ((l = c - p) == 0)
 			continue;
-		if (strncmp (p, LOGIN_UID_MIN, l) == 0)
-			bound = &uidmin;
-		else if (strncmp (p, LOGIN_UID_MAX, l) == 0)
-			bound = &uidmax;
-		else
+
+		/* NUL terminate the key so we can use it */
+		*c = '\0';
+		cfg = _cget (p, config, num, sz);
+		if (!cfg)
 			continue;
+
+		/* find start of value */
+		p += l + 1;
+		r -= l + 1;
 		c = skipspaces (c + 1, 1);
-		/* assume it's a real number */
-		*bound = (uid_t)atol (c);
+		if (!*c)
+			continue;
+
+		if (*c == '"') {
+			char *e = strpbrk (c + 1, "\"");
+			c++;
+			if (e)
+				*e = '\0';
+		}
+
+		if (cfg->type == T_INT)
+			cfg->value = atoi (c);
+		else if (cfg->type == T_STR)
+			cfg->str = strdup (c);
 	}
-	fclose (defs);
+	fclose (f);
 	free (line);
-	return 0;
+	return 1;
 }
+
+static struct conf configuration[] = {
+	{ "EVT_EXT", T_STR, ".handler" },
+	/*{ "GROUP", T_STR, "runevents" },*/
+	{ "LOGIN_DEFS", T_STR, "/etc/login.defs" },
+	{ "MAILER", T_STR, "/usr/bin/mail" },
+	{ "MAX_PROCS", T_INT, NULL, 4 },
+	/*{ "NICE", T_INT, NULL, 0 },*/
+	{ "PROC_RUN_TIME", T_INT, NULL, 120 },
+	{ "PROC_SIG_TIME", T_INT, NULL, 5 },
+	/*{ "RLIMIT", T_INT, NULL, 0 },*/
+	{ "SYS_DIR", T_STR, "/" },
+	{ "SYS_EVT_DIR", T_STR, "/etc/events.d" },
+	{ "UID_MAX_KEY", T_STR, "UID_MAX" },
+	{ "UID_MIN_KEY", T_STR, "UID_MIN" },
+	{ "USER_EVT_DIR", T_STR, "events.d" },
+	/*{ "USER_NICE", T_INT, NULL, 0 },
+	{ "USER_RLIMIT", T_INT, NULL, 0 }*/
+};
+
+#define PNSZ(s) &s, sizeof (s) / sizeof (*(s)), sizeof (*(s))
+
+#ifndef NDEBUG
+static void _checkconfiguration (const struct conf *c, size_t n, size_t sz) {
+	size_t i, f = 0;
+	char *p = "\0";
+	for (i = 0; i < n; p = c[i++].name) {
+		if (strcmp (p, c[i].name) > 0) {
+			DEBUG ("wrong order: '%s' > '%s'", p, c[i].name);
+			f++;
+		}
+	}
+	if (f)
+		exit (EXIT_FAILURE);
+}
+#endif
+
+struct conf *cget (const char *name) {
+	return _cget (name, PNSZ (configuration));
+}
+
+int cfgvalue (const char *name) {
+	struct conf *c = cget (name);
+	return c ? c->value : 0;
+}
+
+char *cfgstr (const char *name) {
+	struct conf *c = cget (name);
+	return c ? c->str : NULL;
+}
+
+static struct conf uidrange[] = {
+	{ "UID_MAX", T_INT, NULL, INT_MAX },
+	{ "UID_MIN", T_INT, NULL, INT_MIN }
+};
+
+int getuidrange (void) {
+	char *defs = cfgstr ("LOGIN_DEFS");
+	return defs && parseconfig (defs, PNSZ (uidrange));
+}
+
+int uidmax (void) {
+	struct conf *c = _cget ("UID_MAX", PNSZ (uidrange));
+	return c->value;
+}
+
+int uidmin (void) {
+	struct conf *c = _cget ("UID_MIN", PNSZ (uidrange));
+	return c->value;
+}
+
+#define USEROK(u) ((u)->pw_uid >= uidmin () && (u)->pw_uid <= uidmax ())
 
 void closefd (int fd) {
 	int r;
@@ -210,7 +286,7 @@ pid_t open3 (int *cin, int *cout, int *cerr, const struct passwd *pw, const char
 		confstr (_CS_PATH, path, sizeof (path));
 		setenv ("PATH", path, 1);
 		execv (argv[0], argv);
-		fprintf (stderr, "'%s' failed: %s", argv[0], strerror (errno));
+		fprintf (stderr, "exec '%s' failed: %s", argv[0], strerror (errno));
 		/* should not happen */
 		exit (EXIT_FAILURE);
 	}
@@ -275,7 +351,7 @@ int initmail (struct subproc *proc, const char *subject) {
 		return proc->mail.pid;
 	if (!(pw = getpwuid (proc->uid)))
 		return -1;
-	args[0] = MAILER;
+	args[0] = cfgstr ("MAILER");
 	args[1] = "-s";
 	args[2] = (char *)subject;
 	args[3] = "--";
@@ -296,10 +372,11 @@ static bheap_t *heap;
 	FD_SET (r, &fdset); \
 	FD_SET (e, &fdset); \
 } while (0)
-/* doesn't adjust nfds (yet?) */
 #define CLRFDS(r,e) do { \
 	FD_CLR (r, &fdset); \
 	FD_CLR (e, &fdset); \
+	while (nfds > 0 && !FD_ISSET (nfds - 1, &fdset)) \
+		nfds--; \
 } while (0)
 
 int spcmp (const void *arg1, const void *arg2) {
@@ -312,14 +389,14 @@ int spcmp (const void *arg1, const void *arg2) {
 
 struct subproc *runevent (const struct passwd *pw, char * const *argv, char * const *env) {
 	struct subproc *proc = calloc (1, sizeof (struct subproc));
-	proc->mail.pid = -1;
+	proc->mail.pid = proc->mail.infd = -1;
 	proc->status = SPRUN;
 	if (pw) {
 		proc->uid = pw->pw_uid;
 		proc->gid = pw->pw_gid;
 	}
 	proc->pid = open3 (NULL, &proc->readfd, &proc->errorfd, pw,
-		pw ? pw->pw_dir : SYSDIR,
+		pw ? pw->pw_dir : cfgstr ("SYS_DIR"),
 		argv, env);
 	/* XXX */
 	if (proc->pid == -1)
@@ -327,7 +404,7 @@ struct subproc *runevent (const struct passwd *pw, char * const *argv, char * co
 	DEBUG ("open3 '%s' pid %d with stdout piped to %d and stderr to %d", argv[0], proc->pid, proc->readfd, proc->errorfd);
 	SETFDS (proc->readfd, proc->errorfd);
 	clock_gettime (CLOCK_MONOTONIC, &proc->time);
-	proc->time.tv_sec += PROCRUNTIME;
+	proc->time.tv_sec += cfgvalue ("PROC_RUN_TIME");
 	heapup (heap, &proc);
 	return proc;
 	fail:
@@ -362,9 +439,8 @@ int spdel (const void *arg1, void *arg2) {
 void chld (int signum, siginfo_t *sinfo, void *unused) {
 	struct heaparg arg;
 	/* this should only be ours, but if not, still need to reap */
-	int status;
+	int status, code;
 	int sen = errno;
-	DEBUG ("si_code %d == CLD_EXITED? %d", sinfo->si_code, sinfo->si_code == CLD_EXITED);
 	/* actually don't care if it was stopped or the like */
 	arg.pid = sinfo->si_pid;
 	DEBUG ("pid %d", arg.pid);
@@ -372,15 +448,21 @@ void chld (int signum, siginfo_t *sinfo, void *unused) {
 		DEBUG ("waitpid failed: %s", strerror (errno));
 		goto done;
 	}
-	DEBUG ("status = %d, exited = %d", status, WIFEXITED (status));
-	/* also WIFSIGNALED(status) and WTERMSIG(status) to get signal */
-	DEBUG ("process %d exited with status %d", arg.pid, WEXITSTATUS (status));
+	if (WIFEXITED (status)) {
+		if ((code = WEXITSTATUS (status)) != EXIT_SUCCESS) {
+			/* log this */
+			DEBUG ("exited with status %d", code);
+		}
+	} else if (WIFSIGNALED (status)) {
+		code = WTERMSIG (status);
+		/* log this */
+		DEBUG ("child received signal %d", code);
+	}
 	if (heapdelete (heap, spdel, &arg)) {
 		int code;
 		if ((code = WEXITSTATUS (status)) != EXIT_SUCCESS) {
 			/* log this */
 		}
-		DEBUG ("%d is ours", arg.pid);
 		cleanchild (arg.proc);
 		free (arg.proc);
 	} else {
@@ -426,15 +508,15 @@ char *evtpath (const struct passwd *pw) {
 	if (pw) {
 		EVTCOMP (pw->pw_dir);
 		EVTCOMP ("/");
-		EVTCOMP (EVTDIR);
+		EVTCOMP (cfgstr ("USER_EVT_DIR"));
 		EVTCOMP ("/");
 		EVTCOMP (evt);
-		EVTCOMP (EVTEXT);
+		EVTCOMP (cfgstr ("EVT_EXT"));
 	} else {
-		EVTCOMP (SYSEVTDIR);
+		EVTCOMP (cfgstr ("SYS_EVT_DIR"));
 		EVTCOMP ("/");
 		EVTCOMP (evt);
-		EVTCOMP (EVTEXT);
+		EVTCOMP (cfgstr ("EVT_EXT"));
 	}
 #undef EVTCOMP
 	if (_newlen (&size, len + 1)) {
@@ -495,6 +577,27 @@ int spoutput (const void *arg1, void *arg2) {
 	return 0;
 }
 
+static struct subproc *runif (const struct passwd *pw, char **argv, char * const *env) {
+	struct stat f;
+	struct subproc *proc;
+
+	argv[0] = evtpath (pw);
+	if (stat (argv[0], &f) != 0)
+		return NULL;
+
+	if (f.st_uid != (pw ? pw->pw_uid : 0)) {
+		/* log this */
+		DEBUG ("'%s' is not owned by %s", argv[0], pw ? pw->pw_name : "root");
+		return NULL;
+	}
+
+	if (!(proc = runevent (pw, argv, env))) {
+		/* log this */
+	}
+
+	return proc;
+}
+
 /*
 simplest way to do this is if this is called as
 runevent evtname envname=value...
@@ -516,26 +619,49 @@ int main (int argc, char **argv) {
 	struct passwd *pw;
 	struct timespec now;
 	struct subproc *proc;
-	struct stat f;
-	int i = 1, done = 0;
-	char *args[2], *env[argc - i];
+	int i, done = 0;
+	int maxprocs, procsigtime;
+	char *args[2], *env[argc - 1];
 
 	/* XXX */
 	if (argc < 2)
 		return EXIT_FAILURE;
 
+#ifdef NDEBUG
+	/* XXX */
+	if (getuid () != 0)
+		return EXIT_FAILURE;
+#else
+	_checkconfiguration (PNSZ (configuration));
+	_checkconfiguration (PNSZ (uidrange));
+#endif
+
 	/* set up argv and env */
-	evt = argv[i];
+	evt = argv[1];
 	/* argv[0] will be set below */
 	args[1] = NULL;
-	for (; i < argc; i++)
-		env[i] = argv[i];
+	for (i = 0; i < argc - 2; i++)
+		env[i] = argv[i + 2];
 	env[i] = NULL;
 
 	FD_ZERO (&fdset);
 
+	parseconfig (CONFIGFILE, PNSZ (configuration));
+
+	maxprocs = cfgvalue ("MAX_PROCS");
+	if (maxprocs < 1) {
+		fprintf (stderr, "%s: MAX_PROCS must be at least 1\n", argv[0]);
+		maxprocs = 1;
+	}
+
+	procsigtime = cfgvalue ("PROC_SIG_TIME");
+	if (procsigtime < 1) {
+		fprintf (stderr, "%s: PROC_SIG_TIME must be at least 1\n", argv[0]);
+		procsigtime = 1;
+	}
+
 	getuidrange ();
-	DEBUG ("got UID range %d-%d", uidmin, uidmax);
+	DEBUG ("got UID range %d-%d", uidmin (), uidmax ());
 
 	/* register SIGCHLD handler */
 	sa.sa_flags = SA_NOCLDSTOP | SA_SIGINFO;
@@ -546,23 +672,17 @@ int main (int argc, char **argv) {
 		return EXIT_FAILURE;
 
 	/* set up our priority queue */
-	heap = heapalloc (-1, MAXPROCS, sizeof (struct subproc *), spcmp);
+	heap = heapalloc (-1, maxprocs, sizeof (struct subproc *), spcmp);
 
 	clock_gettime (CLOCK_MONOTONIC, &now);
 
 	/* try running system event handler */
-	args[0] = evtpath (NULL);
-	DEBUG ("does '%s' exist?", args[0]);
-	if (stat (args[0], &f) == 0) {
-		if (!(proc = runevent (NULL, args, env))) {
-			/* log this */
-		}
-	}
+	proc = runif (NULL, args, env);
 
 	/* now the main loop */
 	while (1) {
 		clock_gettime (CLOCK_MONOTONIC, &now);
-		if (done || heapcount (heap) == MAXPROCS) {
+		if (done || heapcount (heap) == maxprocs) {
 			struct timespec timeout;
 			struct spout output;
 			if (!heappeek (heap, &proc))
@@ -571,29 +691,29 @@ int main (int argc, char **argv) {
 			tsdiff (&timeout, &proc->time, &now);
 			if (timeout.tv_sec < 0) {
 				if (proc->status == SPRUN) {
+					DEBUG ("kill -TERM %d", proc->pid);
 					kill (proc->pid, SIGTERM);
 					heapdown (heap, NULL);
 					proc->time = now;
-					proc->time.tv_sec += PROCSIGTIME;
+					proc->time.tv_sec += procsigtime;
 					proc->status = SPSIG;
 					heapup (heap, &proc);
 				} else {
 					/* if we just sent KILL, we might not
 					get SIGCHLD right away
 					will we get SIGCHLD if we waitpid()? */
+					DEBUG ("kill -KILL %d", proc->pid);
 					kill (proc->pid, SIGKILL);
 					/*waitpid (proc->pid, &i, 0);*/
 				}
 				/* timeout is negative, so don't select() */
 				continue;
 			}
-			DEBUG ("pselect with timeout in %d.%09ds", (int)timeout.tv_sec, (int)timeout.tv_nsec);
 			do {
 				output.num = pselect (nfds,
 					&output.fdset, NULL, NULL /* check too? */,
 					&timeout, NULL);
 			} while (output.num == -1 && errno == EINTR);
-			DEBUG ("pselect returns %d", output.num);
 			if (output.num < 0) {
 				DEBUG ("pselect error: %s", strerror (errno));
 				continue;
@@ -610,13 +730,7 @@ int main (int argc, char **argv) {
 		if (!USEROK (pw))
 			continue;
 		/* run user handler */
-		args[0] = evtpath (pw);
-		DEBUG ("does '%s' exist?", args[0]);
-		if (stat (args[0], &f) == 0) {
-			if (!(proc = runevent (pw, args, env))) {
-				/* log this */
-			}
-		}
+		proc = runif (pw, args, env);
 	}
 	return EXIT_SUCCESS;
 }
