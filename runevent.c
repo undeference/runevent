@@ -9,6 +9,7 @@
 #include <unistd.h>
 #include <ctype.h>
 #include <pwd.h>
+#include <grp.h>
 #include <stdio.h>
 #include <string.h>
 #include <limits.h>
@@ -132,7 +133,7 @@ int parseconfig (const char *file, struct conf **config, size_t num, size_t sz) 
 
 static struct conf configuration[] = {
 	{ "EVT_EXT", T_STR, ".handler" },
-	/*{ "GROUP", T_STR, "runevents" },*/
+	{ "GROUP", T_STR, "" },
 	{ "LOGIN_DEFS", T_STR, "/etc/login.defs" },
 	{ "MAILER", T_STR, "/usr/bin/mail" },
 	{ "MAX_PROCS", T_INT, NULL, 4 },
@@ -199,8 +200,6 @@ int uidmin (void) {
 	struct conf *c = _cget ("UID_MIN", PNSZ (uidrange));
 	return c->value;
 }
-
-#define USEROK(u) ((u)->pw_uid >= uidmin () && (u)->pw_uid <= uidmax ())
 
 void closefd (int fd) {
 	int r;
@@ -598,6 +597,35 @@ static struct subproc *runif (const struct passwd *pw, char **argv, char * const
 	return proc;
 }
 
+int userok (const struct passwd *pw) {
+	struct group *gr;
+	char **mem;
+	char *grnam;
+
+	if (pw->pw_uid < uidmin () || pw->pw_uid > uidmax ())
+		return 0;
+
+	grnam = cfgstr ("GROUP");
+	if (!*grnam)
+		return 1;
+
+	/* silently ignore */
+	if (!(gr = getgrnam (grnam)))
+		return 1;
+
+	DEBUG ("checking if %s is a member of %s", pw->pw_name, grnam);
+
+	if (pw->pw_gid == gr->gr_gid)
+		return 1;
+
+	for (mem = gr->gr_mem; *mem; mem++) {
+		if (strcmp (pw->pw_name, *mem) == 0)
+			return 1;
+	}
+
+	return 0;
+}
+
 /*
 simplest way to do this is if this is called as
 runevent evtname envname=value...
@@ -727,7 +755,7 @@ int main (int argc, char **argv) {
 			endpwent ();
 			continue;
 		}
-		if (!USEROK (pw))
+		if (!userok (pw))
 			continue;
 		/* run user handler */
 		proc = runif (pw, args, env);
