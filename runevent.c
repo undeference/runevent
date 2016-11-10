@@ -136,6 +136,8 @@ static struct conf configuration[] = {
 	{ "EVT_EXT", T_STR, ".handler" },
 	{ "GROUP", T_STR, "" },
 	{ "LOGIN_DEFS", T_STR, "/etc/login.defs" },
+	/*{ "MAIL_HEADER", T_STR, "This is to inform you about %n" },
+	{ "MAIL_SUBJECT", T_STR, "runevent: %n" }, */
 	{ "MAILER", T_STR, "/usr/bin/mail" },
 	{ "MAX_PROCS", T_INT, NULL, 4 },
 	{ "NICE", T_INT, NULL, 0 },
@@ -340,14 +342,15 @@ struct subproc {
 	enum { SPRUN, SPSIG } status;
 	/* clock_gettime(CLOCK_MONOTONIC) */
 	struct timespec time;
-	/* ??? */
+	char *path;
+	/* mail */
 	struct {
 		pid_t pid;
 		int infd;
 	} mail;
 };
 
-int initmail (struct subproc *proc, const char *subject) {
+pid_t initmail (struct subproc *proc, const char *subject) {
 	struct passwd *pw;
 	/* How many arguments to the mailer?
 	 * 1             2  3         4  5    6
@@ -365,6 +368,11 @@ int initmail (struct subproc *proc, const char *subject) {
 	args[4] = pw->pw_name;
 	args[5] = NULL;
 	proc->mail.pid = open3 (&proc->mail.infd, NULL, NULL, pw, NULL, (char * const *)args, NULL);
+	/* MAIL_HEADER */
+	if (proc->mail.pid > -1) {
+		dprintf (proc->mail.infd, "This is to inform you about %s\n\n",
+			proc->path);
+	}
 	return proc->mail.pid;
 }
 
@@ -396,7 +404,7 @@ int spcmp (const void *arg1, const void *arg2) {
 
 struct subproc *runevent (const struct passwd *pw, char * const *argv, char * const *env) {
 	struct subproc *proc = calloc (1, sizeof (struct subproc));
-	proc->mail.pid = proc->mail.infd = -1;
+	proc->mail.infd = -1;
 	proc->status = SPRUN;
 	if (pw) {
 		proc->uid = pw->pw_uid;
@@ -412,6 +420,7 @@ struct subproc *runevent (const struct passwd *pw, char * const *argv, char * co
 	SETFDS (proc->readfd, proc->errorfd);
 	clock_gettime (CLOCK_MONOTONIC, &proc->time);
 	proc->time.tv_sec += cfgvalue ("PROC_RUN_TIME");
+	proc->path = strdup (argv[0]);
 	heapup (heap, &proc);
 	return proc;
 	fail:
@@ -422,6 +431,7 @@ struct subproc *runevent (const struct passwd *pw, char * const *argv, char * co
 void cleanchild (struct subproc *proc) {
 	DEBUG ("reap %d", proc->pid);
 	CLRFDS (proc->readfd, proc->errorfd);
+	free (proc->path);
 	if (proc->mail.pid > 0) {
 		closefd (proc->mail.infd);
 		proc->mail.pid = -1;
@@ -552,17 +562,22 @@ static int validfd (int fd) {
 	return fcntl (fd, F_GETFD) != -1 || errno != EBADF;
 }
 
-static void readfd (int *fd, fd_set *fds, int *num) {
+static void readfd (int *fd, int tofd, fd_set *fds, int *num) {
 	if (*fd >= 0 && FD_ISSET (*fd, fds)) {
 		char buf[1024];
 		ssize_t n;
 		do {
 			n = read (*fd, buf, sizeof (buf) - 1);
-			buf[n < 0 ? 0 : n] = '\0';
-			DEBUG ("read %d of %d >>> %s", *fd, (int)n, buf);
-		} while ((n == -1 && errno == EINTR) || n == sizeof (buf) - 1);
+			if (n == -1) {
+				if (errno == EINTR)
+					continue;
+				break;
+			}
+			/*buf[n] = '\0';*/
+			if (tofd != -1)
+				write (tofd, buf, n);
+		} while (n == sizeof (buf) - 1);
 		if (n == 0) {
-			DEBUG ("eof %d", *fd);
 			FD_CLR (*fd, &fdset);
 			*fd = -1;
 		}
@@ -577,10 +592,10 @@ struct spout {
 int spoutput (const void *arg1, void *arg2) {
 	struct subproc *proc = *(struct subproc **)arg1;
 	struct spout *output = arg2;
-	/* TODO */
-	DEBUG ("test %d and %d in set", proc->readfd, proc->errorfd);
-	readfd (&proc->readfd, &output->fdset, &output->num);
-	readfd (&proc->errorfd, &output->fdset, &output->num);
+	/* MAIL_SUBJECT */
+	initmail (proc, "runevent");
+	readfd (&proc->readfd, proc->mail.infd, &output->fdset, &output->num);
+	readfd (&proc->errorfd, proc->mail.infd, &output->fdset, &output->num);
 	return 0;
 }
 
