@@ -434,7 +434,8 @@ void cleanchild (struct subproc *proc) {
 	free (proc->path);
 	if (proc->mail.pid > 0) {
 		closefd (proc->mail.infd);
-		proc->mail.pid = -1;
+		proc->mail.pid = 0;
+		proc->mail.infd = -1;
 	}
 }
 
@@ -449,6 +450,11 @@ int spdel (const void *arg1, void *arg2) {
 	if (proc->pid == arg->pid) {
 		arg->proc = proc;
 		return 1;
+	}
+	if (proc->mail.pid == arg->pid) {
+		closefd (proc->mail.infd);
+		proc->mail.pid = 0;
+		proc->mail.infd = -1;
 	}
 	return 0;
 }
