@@ -4,6 +4,7 @@
 #include <sys/wait.h>
 #include <sys/select.h>
 #include <sys/stat.h>
+#include <sys/resource.h>
 #include <dirent.h>
 #include <stdlib.h>
 #include <unistd.h>
@@ -137,7 +138,7 @@ static struct conf configuration[] = {
 	{ "LOGIN_DEFS", T_STR, "/etc/login.defs" },
 	{ "MAILER", T_STR, "/usr/bin/mail" },
 	{ "MAX_PROCS", T_INT, NULL, 4 },
-	/*{ "NICE", T_INT, NULL, 0 },*/
+	{ "NICE", T_INT, NULL, 0 },
 	{ "PROC_RUN_TIME", T_INT, NULL, 120 },
 	{ "PROC_SIG_TIME", T_INT, NULL, 5 },
 	/*{ "RLIMIT", T_INT, NULL, 0 },*/
@@ -146,8 +147,8 @@ static struct conf configuration[] = {
 	{ "UID_MAX_KEY", T_STR, "UID_MAX" },
 	{ "UID_MIN_KEY", T_STR, "UID_MIN" },
 	{ "USER_EVT_DIR", T_STR, "events.d" },
-	/*{ "USER_NICE", T_INT, NULL, 0 },
-	{ "USER_RLIMIT", T_INT, NULL, 0 }*/
+	{ "USER_NICE", T_INT, NULL, 0 },
+	/*{ "USER_RLIMIT", T_INT, NULL, 0 }*/
 };
 
 #define PNSZ(s) &s, sizeof (s) / sizeof (*(s)), sizeof (*(s))
@@ -252,11 +253,18 @@ pid_t open3 (int *cin, int *cout, int *cerr, const struct passwd *pw, const char
 		char path[128];
 		if (dir && chdir (dir) != 0)
 			exit (EXIT_FAILURE);
-		if (!pw)
+		if (!pw) {
 			pw = getpwuid (0);
-		/* drop privileges */
-		else if (setgid (pw->pw_gid) != 0 || setuid (pw->pw_uid) != 0)
-			exit (EXIT_FAILURE);
+			setpriority (PRIO_PROCESS, getpid (),
+				cfgvalue ("NICE"));
+		} else {
+			/* must be set before dropping privileges */
+			setpriority (PRIO_PROCESS, getpid (),
+				cfgvalue ("USER_NICE"));
+			/* drop privileges */
+			if (setgid (pw->pw_gid) != 0 || setuid (pw->pw_uid) != 0)
+				exit (EXIT_FAILURE);
+		}
 		/* close unneeded fds */
 #define CLODUP(fd,n,x) do { \
 	if ((fd)[0] > -1) { \
