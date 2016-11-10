@@ -12,6 +12,7 @@
 #include <pwd.h>
 #include <grp.h>
 #include <stdio.h>
+#include <stdarg.h>
 #include <string.h>
 #include <limits.h>
 #include <signal.h>
@@ -34,6 +35,8 @@
 #else
 #define DEBUG(f,...)
 #endif
+
+#define ARRAYN(a) (sizeof (a) / sizeof (*(a)))
 
 char *skipspaces (char *s, int n) {
 	while (*s && isspace (*s))
@@ -153,7 +156,7 @@ static struct conf configuration[] = {
 	/*{ "USER_RLIMIT", T_INT, NULL, 0 }*/
 };
 
-#define PNSZ(s) &s, sizeof (s) / sizeof (*(s)), sizeof (*(s))
+#define PNSZ(s) &s, ARRAYN (s), sizeof (*(s))
 
 #ifndef NDEBUG
 static void _checkconfiguration (const struct conf *c, size_t n, size_t sz) {
@@ -334,7 +337,7 @@ struct subproc {
 	uid_t uid;
 	gid_t gid;
 	/* readers for stdout and stderr */
-	int readfd, errorfd;
+	int fd[2];
 	/*
 	 * if status == SPRUN, signal with TERM
 	 * if status == SPSIG, signal with KILL
@@ -346,7 +349,7 @@ struct subproc {
 	/* mail */
 	struct {
 		pid_t pid;
-		int infd;
+		int fd[1];
 	} mail;
 };
 
@@ -367,13 +370,26 @@ pid_t initmail (struct subproc *proc, const char *subject) {
 	args[3] = "--";
 	args[4] = pw->pw_name;
 	args[5] = NULL;
-	proc->mail.pid = open3 (&proc->mail.infd, NULL, NULL, pw, NULL, (char * const *)args, NULL);
+	proc->mail.pid = open3 (&proc->mail.fd[0], NULL, NULL, pw, NULL, (char * const *)args, NULL);
 	/* MAIL_HEADER */
 	if (proc->mail.pid > -1) {
-		dprintf (proc->mail.infd, "This is to inform you about %s\n\n",
+		dprintf (proc->mail.fd[0], "This is to inform you about %s\n\n",
 			proc->path);
 	}
 	return proc->mail.pid;
+}
+
+__attribute__ ((format (printf, 2, 3))) int mail (struct subproc *proc, const char *fmt, ...) {
+	int r = 0;
+	if (!*fmt)
+		return 0;
+	va_list ap;
+	va_start (ap, fmt);
+	/* XXX */
+	if (initmail (proc, "runevent"))
+		r = vdprintf (proc->mail.fd[0], fmt, ap);
+	va_end (ap);
+	return r;
 }
 
 static char *evt;
@@ -381,15 +397,20 @@ static fd_set fdset;
 static int nfds = 0;
 static bheap_t *heap;
 
-#define SETFDS(r,e) do { \
-	if ((r) >= nfds) nfds = (r) + 1; \
-	if ((e) >= nfds) nfds = (e) + 1; \
-	FD_SET (r, &fdset); \
-	FD_SET (e, &fdset); \
+#define SETFDS(fd) do { \
+	size_t i; \
+	for (i = 0; i < ARRAYN (fd); i++) { \
+		if ((fd)[i] >= nfds) \
+			nfds = (fd)[i] + 1; \
+		FD_SET ((fd)[i], &fdset); \
+	} \
 } while (0)
-#define CLRFDS(r,e) do { \
-	FD_CLR (r, &fdset); \
-	FD_CLR (e, &fdset); \
+#define CLRFDS(fd) do { \
+	size_t i; \
+	for (i = 0; i < ARRAYN (fd); i++) { \
+		FD_CLR ((fd)[i], &fdset); \
+		(fd)[i] = -1; \
+	} \
 	while (nfds > 0 && !FD_ISSET (nfds - 1, &fdset)) \
 		nfds--; \
 } while (0)
@@ -404,20 +425,20 @@ int spcmp (const void *arg1, const void *arg2) {
 
 struct subproc *runevent (const struct passwd *pw, char * const *argv, char * const *env) {
 	struct subproc *proc = calloc (1, sizeof (struct subproc));
-	proc->mail.infd = -1;
+	proc->mail.fd[0] = -1;
 	proc->status = SPRUN;
 	if (pw) {
 		proc->uid = pw->pw_uid;
 		proc->gid = pw->pw_gid;
 	}
-	proc->pid = open3 (NULL, &proc->readfd, &proc->errorfd, pw,
+	proc->pid = open3 (NULL, &proc->fd[0], &proc->fd[1], pw,
 		pw ? pw->pw_dir : cfgstr ("SYS_DIR"),
 		argv, env);
 	/* XXX */
 	if (proc->pid == -1)
 		goto fail;
-	DEBUG ("open3 '%s' pid %d with stdout piped to %d and stderr to %d", argv[0], proc->pid, proc->readfd, proc->errorfd);
-	SETFDS (proc->readfd, proc->errorfd);
+	DEBUG ("open3 '%s' pid %d with stdout piped to %d and stderr to %d", argv[0], proc->pid, proc->fd[0], proc->fd[1]);
+	SETFDS (proc->fd);
 	clock_gettime (CLOCK_MONOTONIC, &proc->time);
 	proc->time.tv_sec += cfgvalue ("PROC_RUN_TIME");
 	proc->path = strdup (argv[0]);
@@ -430,12 +451,12 @@ struct subproc *runevent (const struct passwd *pw, char * const *argv, char * co
 
 void cleanchild (struct subproc *proc) {
 	DEBUG ("reap %d", proc->pid);
-	CLRFDS (proc->readfd, proc->errorfd);
+	CLRFDS (proc->fd);
 	free (proc->path);
 	if (proc->mail.pid > 0) {
-		closefd (proc->mail.infd);
+		closefd (proc->mail.fd[0]);
 		proc->mail.pid = 0;
-		proc->mail.infd = -1;
+		proc->mail.fd[0] = -1;
 	}
 }
 
@@ -452,9 +473,9 @@ int spdel (const void *arg1, void *arg2) {
 		return 1;
 	}
 	if (proc->mail.pid == arg->pid) {
-		closefd (proc->mail.infd);
+		closefd (proc->mail.fd[0]);
 		proc->mail.pid = 0;
-		proc->mail.infd = -1;
+		proc->mail.fd[0] = -1;
 	}
 	return 0;
 }
@@ -564,28 +585,30 @@ void tsdiff (struct timespec *dest, struct timespec *a, struct timespec *b) {
 	dest->tv_nsec = nsec;
 }
 
-static int validfd (int fd) {
-	return fcntl (fd, F_GETFD) != -1 || errno != EBADF;
-}
-
-static void readfd (int *fd, int tofd, fd_set *fds, int *num) {
-	if (*fd >= 0 && FD_ISSET (*fd, fds)) {
+static void readfd2 (struct subproc *proc, fd_set *fds, int *num) {
+	size_t i;
+	for (i = 0; *num && i < ARRAYN (proc->fd); i++) {
 		char buf[1024];
 		ssize_t n;
+
+		if (proc->fd[i] < 0 || !FD_ISSET (proc->fd[i], fds))
+			continue;
+
 		do {
-			n = read (*fd, buf, sizeof (buf) - 1);
-			if (n == -1) {
-				if (errno == EINTR)
-					continue;
+			do {
+				n = read (proc->fd[i], buf, sizeof (buf) - 1);
+			} while (n == -1 && errno == EINTR);
+			/* XXX */
+			if (n == -1)
 				break;
-			}
-			/*buf[n] = '\0';*/
-			if (tofd != -1)
-				write (tofd, buf, n);
+			buf[n] = '\0';
+			mail (proc, "%s", buf);
 		} while (n == sizeof (buf) - 1);
+		/* eof */
 		if (n == 0) {
-			FD_CLR (*fd, &fdset);
-			*fd = -1;
+			FD_CLR (proc->fd[i], &fdset);
+			closefd (proc->fd[i]);
+			proc->fd[i] = -1;
 		}
 		(*num)--;
 	}
@@ -600,8 +623,7 @@ int spoutput (const void *arg1, void *arg2) {
 	struct spout *output = arg2;
 	/* MAIL_SUBJECT */
 	initmail (proc, "runevent");
-	readfd (&proc->readfd, proc->mail.infd, &output->fdset, &output->num);
-	readfd (&proc->errorfd, proc->mail.infd, &output->fdset, &output->num);
+	readfd2 (proc, &output->fdset, &output->num);
 	return 0;
 }
 
@@ -776,7 +798,8 @@ int main (int argc, char **argv) {
 				continue;
 			}
 			/* iterate over items in the heap */
-			heapsearch (heap, NULL, 0, spoutput, &output);
+			if (output.num > 0)
+				heapsearch (heap, NULL, 0, spoutput, &output);
 			continue;
 		}
 		if (!(pw = getpwent ())) {
