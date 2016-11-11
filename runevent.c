@@ -341,8 +341,9 @@ struct subproc {
 	/*
 	 * if status == SPRUN, signal with TERM
 	 * if status == SPSIG, signal with KILL
+	 * if status == SPEXITED, it has already exited
 	 */
-	enum { SPRUN, SPSIG } status;
+	enum { SPRUN, SPSIG, SPEXITED } status;
 	/* clock_gettime(CLOCK_MONOTONIC) */
 	struct timespec time;
 	char *path;
@@ -460,11 +461,6 @@ void cleanchild (struct subproc *proc) {
 	}
 }
 
-struct heaparg {
-	pid_t pid;
-	struct subproc *proc;
-};
-
 int spdelall (const void *arg1, void *arg2) {
 	struct subproc *proc = *(struct subproc **)arg1;
 	cleanchild (proc);
@@ -472,30 +468,33 @@ int spdelall (const void *arg1, void *arg2) {
 	return 1;
 }
 
-int spdel (const void *arg1, void *arg2) {
+int spexited (const void *arg1, void *arg2) {
 	struct subproc *proc = *(struct subproc **)arg1;
-	struct heaparg *arg = arg2;
-	if (proc->pid == arg->pid) {
-		arg->proc = proc;
+	pid_t *pid = arg2;
+	/* match the handler itself */
+	if (proc->pid == *pid) {
+		/* just mark it because messing with the heap is unsafe here */
+		proc->status = SPEXITED;
 		return 1;
 	}
-	if (proc->mail.pid == arg->pid) {
+	/* MAILER exited */
+	if (proc->mail.pid == *pid) {
 		closefd (proc->mail.fd[0]);
 		proc->mail.pid = 0;
 		proc->mail.fd[0] = -1;
+		return 1;
 	}
 	return 0;
 }
 
 void chld (int signum, siginfo_t *sinfo, void *unused) {
-	struct heaparg arg;
 	/* this should only be ours, but if not, still need to reap */
 	int status, code;
 	int sen = errno;
 	/* actually don't care if it was stopped or the like */
-	arg.pid = sinfo->si_pid;
-	DEBUG ("pid %d", arg.pid);
-	if (waitpid (arg.pid, &status, 0) == -1) {
+	pid_t pid = sinfo->si_pid;
+	DEBUG ("pid %d", pid);
+	if (waitpid (pid, &status, 0) == -1) {
 		DEBUG ("waitpid failed: %s", strerror (errno));
 		goto done;
 	}
@@ -506,22 +505,10 @@ void chld (int signum, siginfo_t *sinfo, void *unused) {
 		}
 	} else if (WIFSIGNALED (status)) {
 		code = WTERMSIG (status);
-		/* log this */
-		DEBUG ("child received signal %d", code);
 	}
-	if (heapdelete (heap, spdel, &arg)) {
-		int code;
-		if ((code = WEXITSTATUS (status)) != EXIT_SUCCESS) {
-			/* log this */
-		}
-		cleanchild (arg.proc);
-		free (arg.proc);
-	} else {
-		DEBUG ("%d is not ours?!", arg.pid);
-		/* log this */
-		/* except that there may be many subprocesses, since we have to
-		use sendmail */
-	}
+	/* it is not safe to mess with the heap here */
+	if (heapsearch (heap, NULL, 0, spexited, &pid) == -1)
+		DEBUG ("%d is not ours?!", pid);
 	done:
 	errno = sen;
 }
@@ -773,6 +760,13 @@ int main (int argc, char **argv) {
 			struct spout output;
 			if (!heappeek (heap, &proc))
 				break;
+			/* the handler has already exited */
+			if (proc->status == SPEXITED) {
+				heapdown (heap, NULL);
+				cleanchild (proc);
+				free (proc);
+				continue;
+			}
 			output.fdset = fdset;
 			tsdiff (&timeout, &proc->time, &now);
 			if (timeout.tv_sec < 0) {
@@ -784,7 +778,7 @@ int main (int argc, char **argv) {
 					proc->time.tv_sec += procsigtime;
 					proc->status = SPSIG;
 					heapup (heap, &proc);
-				} else {
+				} else if (proc->status == SPSIG) {
 					/* if we just sent KILL, we might not
 					get SIGCHLD right away
 					will we get SIGCHLD if we waitpid()? */
