@@ -465,6 +465,13 @@ struct heaparg {
 	struct subproc *proc;
 };
 
+int spdelall (const void *arg1, void *arg2) {
+	struct subproc *proc = *(struct subproc **)arg1;
+	cleanchild (proc);
+	free (proc);
+	return 1;
+}
+
 int spdel (const void *arg1, void *arg2) {
 	struct subproc *proc = *(struct subproc **)arg1;
 	struct heaparg *arg = arg2;
@@ -704,12 +711,12 @@ int main (int argc, char **argv) {
 
 	/* XXX */
 	if (argc < 2)
-		return EXIT_FAILURE;
+		goto fail;
 
 #ifdef NDEBUG
 	/* XXX */
 	if (getuid () != 0)
-		return EXIT_FAILURE;
+		goto fail;
 #else
 	_checkconfiguration (PNSZ (configuration));
 	_checkconfiguration (PNSZ (uidrange));
@@ -748,7 +755,7 @@ int main (int argc, char **argv) {
 	sigemptyset (&sa.sa_mask);
 	/* XXX */
 	if (sigaction (SIGCHLD, &sa, NULL) == -1)
-		return EXIT_FAILURE;
+		goto fail;
 
 	/* set up our priority queue */
 	heap = heapalloc (-1, maxprocs, sizeof (struct subproc *), spcmp);
@@ -813,4 +820,9 @@ int main (int argc, char **argv) {
 		proc = runif (pw, args, env);
 	}
 	return EXIT_SUCCESS;
+	fail:
+	endpwent ();
+	heapdelete (heap, spdelall, NULL);
+	heapfree (heap);
+	return EXIT_FAILURE;
 }
