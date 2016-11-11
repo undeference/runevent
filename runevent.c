@@ -136,22 +136,22 @@ int parseconfig (const char *file, struct conf **config, size_t num, size_t sz) 
 }
 
 static struct conf configuration[] = {
-	{ "EVT_EXT", T_STR, ".handler" },
-	{ "GROUP", T_STR, "" },
-	{ "LOGIN_DEFS", T_STR, "/etc/login.defs" },
+	{ "EVT_EXT", T_STR, ".handler", -1 },
+	{ "GROUP", T_STR, "", -1 },
+	{ "LOGIN_DEFS", T_STR, "/etc/login.defs", -1 },
 	/*{ "MAIL_HEADER", T_STR, "This is to inform you about %n" },
 	{ "MAIL_SUBJECT", T_STR, "runevent: %n" }, */
-	{ "MAILER", T_STR, "/usr/bin/mail" },
+	{ "MAILER", T_STR, "/usr/bin/mail", -1 },
 	{ "MAX_PROCS", T_INT, NULL, 4 },
 	{ "NICE", T_INT, NULL, 0 },
 	{ "PROC_RUN_TIME", T_INT, NULL, 120 },
 	{ "PROC_SIG_TIME", T_INT, NULL, 5 },
 	/*{ "RLIMIT", T_INT, NULL, 0 },*/
-	{ "SYS_DIR", T_STR, "/" },
-	{ "SYS_EVT_DIR", T_STR, "/etc/events.d" },
-	{ "UID_MAX_KEY", T_STR, "UID_MAX" },
-	{ "UID_MIN_KEY", T_STR, "UID_MIN" },
-	{ "USER_EVT_DIR", T_STR, "events.d" },
+	{ "SYS_DIR", T_STR, "/", -1 },
+	{ "SYS_EVT_DIR", T_STR, "/etc/events.d", -1 },
+	{ "UID_MAX_KEY", T_STR, "UID_MAX", -1 },
+	{ "UID_MIN_KEY", T_STR, "UID_MIN", -1 },
+	{ "USER_EVT_DIR", T_STR, "events.d", -1 },
 	{ "USER_NICE", T_INT, NULL, 0 },
 	/*{ "USER_RLIMIT", T_INT, NULL, 0 }*/
 };
