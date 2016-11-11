@@ -20,6 +20,7 @@
 #include <syslog.h>
 #include <signal.h>
 #include <fcntl.h>
+#include <syslog.h>
 
 /* specify -I or -L or whatever it is */
 #include <bheap.h>
@@ -225,9 +226,10 @@ void closefrom (int min) {
 	struct dirent *f;
 	DIR *d = opendir ("/dev/fd");
 	int fd;
-	/* XXX complain */
-	if (!d)
+	if (!d) {
+		syslog (LOG_WARNING, "cannot open /dev/fd - fds remain open");
 		return;
+	}
 	while ((f = readdir (d))) {
 		if (!isdigit (f->d_name[0]))
 			continue;
@@ -251,24 +253,41 @@ pid_t open3 (int *cin, int *cout, int *cerr, const struct passwd *pw, const char
 	PIPEX (err);
 #undef PIPEX
 	DEBUG ("run '%s' as '%s' (%d:%d)", argv[0], pw ? pw->pw_name : "root", pw ? pw->pw_uid : 0, pw ? pw->pw_gid : 0);
-	if ((pid = fork ()) == -1)
+	if ((pid = fork ()) == -1) {
+		syslog (LOG_ERR, "fork() failed: %s", strerror (errno));
 		goto fail;
+	}
 	if (pid == 0) {
 		/* child */
 		char path[128];
-		if (dir && chdir (dir) != 0)
+		if (dir && chdir (dir) != 0) {
+			syslog (LOG_ERR, "unable to chdir to '%s'", dir);
 			exit (EXIT_FAILURE);
+		}
 		if (!pw) {
 			pw = getpwuid (0);
+			errno = 0;
 			setpriority (PRIO_PROCESS, getpid (),
 				cfgvalue ("NICE"));
+			if (errno) {
+				syslog (LOG_ERR, "nice %d: %s",
+					cfgvalue ("NICE"), strerror (errno));
+			}
 		} else {
 			/* must be set before dropping privileges */
+			errno = 0;
 			setpriority (PRIO_PROCESS, getpid (),
 				cfgvalue ("USER_NICE"));
+			if (errno) {
+				syslog (LOG_ERR, "nice %d: %s",
+					cfgvalue ("USER_NICE"), strerror (errno));
+			}
 			/* drop privileges */
-			if (setgid (pw->pw_gid) != 0 || setuid (pw->pw_uid) != 0)
+			if (setgid (pw->pw_gid) != 0 || setuid (pw->pw_uid) != 0) {
+				syslog (LOG_ERR, "drop privileges failed: %s",
+					strerror (errno));
 				exit (EXIT_FAILURE);
+			}
 		}
 		/* close unneeded fds */
 #define CLODUP(fd,n,x) do { \
@@ -389,6 +408,8 @@ __attribute__ ((format (printf, 2, 3))) int mail (struct subproc *proc, const ch
 	/* XXX */
 	if (initmail (proc, "runevent"))
 		r = vdprintf (proc->mail.fd[0], fmt, ap);
+	else
+		syslog (LOG_ERR, "unable to send mail for uid %d", proc->uid);
 	va_end (ap);
 	return r;
 }
@@ -435,7 +456,6 @@ struct subproc *runevent (const struct passwd *pw, char * const *argv, char * co
 	proc->pid = open3 (NULL, &proc->fd[0], &proc->fd[1], pw,
 		pw ? pw->pw_dir : cfgstr ("SYS_DIR"),
 		argv, env);
-	/* XXX */
 	if (proc->pid == -1)
 		goto fail;
 	DEBUG ("open3 '%s' pid %d with stdout piped to %d and stderr to %d", argv[0], proc->pid, proc->fd[0], proc->fd[1]);
@@ -499,16 +519,17 @@ void chld (int signum, siginfo_t *sinfo, void *unused) {
 		goto done;
 	}
 	if (WIFEXITED (status)) {
-		if ((code = WEXITSTATUS (status)) != EXIT_SUCCESS) {
-			/* log this */
-			DEBUG ("exited with status %d", code);
-		}
+		if ((code = WEXITSTATUS (status)) != EXIT_SUCCESS)
+			syslog (LOG_WARNING, "%d exited with status %d",
+				pid, code);
 	} else if (WIFSIGNALED (status)) {
 		code = WTERMSIG (status);
+		syslog (LOG_WARNING, "%d was terminated by signal %d",
+			pid, code);
 	}
 	/* it is not safe to mess with the heap here */
 	if (heapsearch (heap, NULL, 0, spexited, &pid) == -1)
-		DEBUG ("%d is not ours?!", pid);
+		syslog (LOG_WARNING, "got unexpected CHLD signal for %d", pid);
 	done:
 	errno = sen;
 }
@@ -558,10 +579,11 @@ char *evtpath (const struct passwd *pw) {
 	}
 #undef EVTCOMP
 	if (_newlen (&size, len + 1)) {
-		path = path ? realloc (path, size) : malloc (size) ;
-		/* XXX */
-		if (!path)
+		path = path ? realloc (path, size) : malloc (size);
+		if (!path) {
+			syslog (LOG_CRIT, "alloc failed: %s", strerror (errno));
 			exit (EXIT_FAILURE);
+		}
 	}
 	path[len] = '\0';
 	for (i--; len > 0 && i >= 0; len -= lens[i], i--)
@@ -592,9 +614,11 @@ static void readfd2 (struct subproc *proc, fd_set *fds, int *num) {
 			do {
 				n = read (proc->fd[i], buf, sizeof (buf) - 1);
 			} while (n == -1 && errno == EINTR);
-			/* XXX */
-			if (n == -1)
+			if (n == -1) {
+				syslog (LOG_WARNING, "read output from '%s': %s",
+					proc->path, strerror (errno));
 				break;
+			}
 			buf[n] = '\0';
 			mail (proc, "%s", buf);
 		} while (n == sizeof (buf) - 1);
@@ -623,23 +647,18 @@ int spoutput (const void *arg1, void *arg2) {
 
 static struct subproc *runif (const struct passwd *pw, char **argv, char * const *env) {
 	struct stat f;
-	struct subproc *proc;
 
 	argv[0] = evtpath (pw);
 	if (stat (argv[0], &f) != 0)
 		return NULL;
 
 	if (f.st_uid != (pw ? pw->pw_uid : 0)) {
-		/* log this */
-		DEBUG ("'%s' is not owned by %s", argv[0], pw ? pw->pw_name : "root");
+		syslog (LOG_ERR, "'%s' is not owned by %s",
+			argv[0], pw ? pw->pw_name : "root");
 		return NULL;
 	}
 
-	if (!(proc = runevent (pw, argv, env))) {
-		/* log this */
-	}
-
-	return proc;
+	return runevent (pw, argv, env);
 }
 
 int userok (const struct passwd *pw) {
@@ -696,14 +715,18 @@ int main (int argc, char **argv) {
 	int maxprocs, procsigtime;
 	char *args[2], *env[argc - 1];
 
-	/* XXX */
-	if (argc < 2)
+	openlog ("runevent", 0, LOG_DAEMON);
+
+	if (argc < 2) {
+		syslog (LOG_CRIT, "run without an event");
 		goto fail;
+	}
 
 #ifdef NDEBUG
-	/* XXX */
-	if (getuid () != 0)
+	if (getuid () != 0) {
+		syslog (LOG_CRIT, "must be run as root");
 		goto fail;
+	}
 #else
 	_checkconfiguration (PNSZ (configuration));
 	_checkconfiguration (PNSZ (uidrange));
@@ -723,13 +746,13 @@ int main (int argc, char **argv) {
 
 	maxprocs = cfgvalue ("MAX_PROCS");
 	if (maxprocs < 1) {
-		fprintf (stderr, "%s: MAX_PROCS must be at least 1\n", argv[0]);
+		syslog (LOG_WARNING, "MAX_PROCS (%d) is less than 1", maxprocs);
 		maxprocs = 1;
 	}
 
 	procsigtime = cfgvalue ("PROC_SIG_TIME");
 	if (procsigtime < 1) {
-		fprintf (stderr, "%s: PROC_SIG_TIME must be at least 1\n", argv[0]);
+		syslog (LOG_WARNING, "PROC_SIG_TIME (%d) is less than 1", procsigtime);
 		procsigtime = 1;
 	}
 
@@ -740,9 +763,10 @@ int main (int argc, char **argv) {
 	sa.sa_flags = SA_NOCLDSTOP | SA_SIGINFO;
 	sa.sa_sigaction = chld;
 	sigemptyset (&sa.sa_mask);
-	/* XXX */
-	if (sigaction (SIGCHLD, &sa, NULL) == -1)
+	if (sigaction (SIGCHLD, &sa, NULL) == -1) {
+		syslog (LOG_CRIT, "register CHLD handler: %s", strerror (errno));
 		goto fail;
+	}
 
 	/* set up our priority queue */
 	heap = heapalloc (-1, maxprocs, sizeof (struct subproc *), spcmp);
@@ -818,5 +842,6 @@ int main (int argc, char **argv) {
 	endpwent ();
 	heapdelete (heap, spdelall, NULL);
 	heapfree (heap);
+	closelog ();
 	return EXIT_FAILURE;
 }
