@@ -697,7 +697,7 @@ int userok (const struct passwd *pw) {
 		return 1;
 
 	if (!(gr = getgrnam (grnam))) {
-		syslog (LOG_WARN, "no such group '%s'; ignoring", grnam);
+		syslog (LOG_WARNING, "no such group '%s'; ignoring", grnam);
 		return 1;
 	}
 
