@@ -488,6 +488,15 @@ int spdelall (const void *arg1, void *arg2) {
 	return 1;
 }
 
+int spdel (const void *arg1, void *arg2) {
+	struct subproc *proc = *(struct subproc **)arg1;
+	if (proc->status != SPEXITED)
+		return 0;
+	cleanchild (proc);
+	free (proc);
+	return 1;
+}
+
 int spexited (const void *arg1, void *arg2) {
 	struct subproc *proc = *(struct subproc **)arg1;
 	pid_t *pid = arg2;
@@ -784,13 +793,6 @@ int main (int argc, char **argv) {
 			struct spout output;
 			if (!heappeek (heap, &proc))
 				break;
-			/* the handler has already exited */
-			if (proc->status == SPEXITED) {
-				heapdown (heap, NULL);
-				cleanchild (proc);
-				free (proc);
-				continue;
-			}
 			output.fdset = fdset;
 			tsdiff (&timeout, &proc->time, &now);
 			if (timeout.tv_sec < 0) {
@@ -825,6 +827,8 @@ int main (int argc, char **argv) {
 			/* iterate over items in the heap */
 			if (output.num > 0)
 				heapsearch (heap, NULL, 0, spoutput, &output);
+			/* free handler slots that are not needed */
+			heapdelete (heap, spdel, NULL);
 			continue;
 		}
 		if (!(pw = getpwent ())) {
