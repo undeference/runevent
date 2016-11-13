@@ -661,9 +661,23 @@ static struct subproc *runif (const struct passwd *pw, char **argv, char * const
 	if (stat (argv[0], &f) != 0)
 		return NULL;
 
+	if (!S_ISREG (f.st_mode))
+		return NULL;
+
 	if (f.st_uid != (pw ? pw->pw_uid : 0)) {
 		syslog (LOG_ERR, "'%s' is not owned by %s",
 			argv[0], pw ? pw->pw_name : "root");
+		return NULL;
+	}
+
+	if (f.st_mode & (S_ISUID | S_IWGRP | S_IWOTH)) {
+		syslog (LOG_ERR, "'%s' must not be group/user-writable or have "
+			"set-uid/gid bits set", argv[0]);
+		return NULL;
+	}
+
+	if (!(f.st_mode & S_IXUSR)) {
+		syslog (LOG_ERR, "'%s' is not executable", argv[0]);
 		return NULL;
 	}
 
