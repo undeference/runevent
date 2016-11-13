@@ -696,9 +696,10 @@ int userok (const struct passwd *pw) {
 	if (!*grnam)
 		return 1;
 
-	/* silently ignore */
-	if (!(gr = getgrnam (grnam)))
+	if (!(gr = getgrnam (grnam))) {
+		syslog (LOG_WARN, "no such group '%s'; ignoring", grnam);
 		return 1;
+	}
 
 	DEBUG ("checking if %s is a member of %s", pw->pw_name, grnam);
 
