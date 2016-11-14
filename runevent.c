@@ -29,6 +29,43 @@
 #define CONFIGFILE "/etc/runevents.conf"
 #endif
 
+#ifndef EVT_EXT
+#define EVT_EXT ".handler"
+#endif
+
+#ifndef GROUP
+#define GROUP ""
+#endif
+
+#ifndef LOGIN_DEFS
+#define LOGIN_DEFS "/etc/login.defs"
+#endif
+
+#ifndef MAILER
+#define MAILER "/usr/bin/mail"
+#endif
+
+#ifndef SYS_DIR
+#define SYS_DIR "/"
+#endif
+
+#ifndef SYS_EVT_DIR
+#define SYS_EVT_DIR "/etc/events.d"
+#endif
+
+#ifndef UID_MAX_KEY
+#define UID_MAX_KEY "UID_MAX"
+#endif
+
+#ifndef UID_MIN_KEY
+#define UID_MIN_KEY "UID_MIN"
+#endif
+
+#ifndef USER_EVT_DIR
+#define USER_EVT_DIR "events.d"
+#endif
+
+
 #ifndef NDEBUG
 #define DEBUG(f,...) \
 	fprintf (stderr, "%s:%d %s() " f "\n", \
@@ -137,22 +174,22 @@ int parseconfig (const char *file, struct conf **config, size_t num, size_t sz) 
 }
 
 static struct conf configuration[] = {
-	{ "EVT_EXT", T_STR, ".handler", -1 },
-	{ "GROUP", T_STR, "", -1 },
-	{ "LOGIN_DEFS", T_STR, "/etc/login.defs", -1 },
+	{ "EVT_EXT", T_STR, EVT_EXT, -1 },
+	{ "GROUP", T_STR, GROUP, -1 },
+	{ "LOGIN_DEFS", T_STR, LOGIN_DEFS, -1 },
 	/*{ "MAIL_HEADER", T_STR, "This is to inform you about %n" },
 	{ "MAIL_SUBJECT", T_STR, "runevent: %n" }, */
-	{ "MAILER", T_STR, "/usr/bin/mail", -1 },
+	{ "MAILER", T_STR, MAILER, -1 },
 	{ "MAX_PROCS", T_INT, NULL, 4 },
 	{ "NICE", T_INT, NULL, 0 },
 	{ "PROC_RUN_TIME", T_INT, NULL, 120 },
 	{ "PROC_SIG_TIME", T_INT, NULL, 5 },
 	/*{ "RLIMIT", T_INT, NULL, 0 },*/
-	{ "SYS_DIR", T_STR, "/", -1 },
-	{ "SYS_EVT_DIR", T_STR, "/etc/events.d", -1 },
-	{ "UID_MAX_KEY", T_STR, "UID_MAX", -1 },
-	{ "UID_MIN_KEY", T_STR, "UID_MIN", -1 },
-	{ "USER_EVT_DIR", T_STR, "events.d", -1 },
+	{ "SYS_DIR", T_STR, SYS_DIR, -1 },
+	{ "SYS_EVT_DIR", T_STR, SYS_EVT_DIR, -1 },
+	{ "UID_MAX_KEY", T_STR, UID_MAX_KEY, -1 },
+	{ "UID_MIN_KEY", T_STR, UID_MIN_KEY, -1 },
+	{ "USER_EVT_DIR", T_STR, USER_EVT_DIR, -1 },
 	{ "USER_NICE", T_INT, NULL, 0 },
 	/*{ "USER_RLIMIT", T_INT, NULL, 0 }*/
 };
