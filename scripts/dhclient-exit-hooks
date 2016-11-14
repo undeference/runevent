@@ -1,4 +1,7 @@
 #!/bin/bash
+# This file is part of runevent. If you had a dhclient-exit-hooks file, it was
+# moved to /etc/events.d/dhclient-exit-hooks.handler. If runevent is removed, it
+# will be moved back
 
 ARGV=( \
 	reason=$reason \
