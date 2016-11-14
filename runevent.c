@@ -794,6 +794,10 @@ int main (int argc, char **argv) {
 
 	/* set up our priority queue */
 	heap = heapalloc (-1, maxprocs, sizeof (struct subproc *), spcmp);
+	if (!heap) {
+		syslog (LOG_CRIT, "could not allocate heap");
+		goto fail;
+	}
 
 	clock_gettime (CLOCK_MONOTONIC, &now);
 
@@ -859,8 +863,10 @@ int main (int argc, char **argv) {
 	return EXIT_SUCCESS;
 	fail:
 	endpwent ();
-	heapdelete (heap, spdelall, NULL);
-	heapfree (heap);
+	if (heap) {
+		heapdelete (heap, spdelall, NULL);
+		heapfree (heap);
+	}
 	closelog ();
 	return EXIT_FAILURE;
 }
