@@ -1,6 +1,7 @@
 CC=gcc
 RM=rm -f
 INSTALL=install
+MKDIR=mkdir -p
 LN=ln -sf
 OPTIMIZE=-DNDEBUG -O3
 DEBUG=-g3
@@ -77,8 +78,9 @@ clean:
 	$(RM) *.o $(EXE) $(EXE)dbg
 
 install:
-	$(INSTALL) -g root -o root -m 700 $(EXE) /usr/sbin
-	$(INSTALL) -g root -o root -m 644 $(CONFIGFILE) /etc
+	$(INSTALL) -g root -o root -m 700 -s $(EXE) /usr/sbin
+	$(INSTALL) -g root -o root -m 644 runevent.conf $(CONFIGFILE)
+	$(MKDIR) $(SCRIPTPATH)
 	$(INSTALL) -g root -o root -m 700 -t $(SCRIPTPATH) scripts/*
 	$(LN) $(SCRIPTPATH)/nm-dispatcher $(NMDISPATCHER)/99-runevent
 	#$(LN) $(SCRIPTPATH)/dhcp $(DHCLIENTEXIT)
