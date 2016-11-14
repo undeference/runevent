@@ -1,0 +1,26 @@
+#!/bin/bash
+# This file is part of runevent
+
+IF="$1"
+STATUS="$2"
+
+run () {
+	ARGV=("$STATUS" IF="$IF")
+
+	for var in \
+		${!CONNECTION_*} \
+		${!DEVICE_*} \
+		${!IP4_*} \
+		${!IP6_*} \
+		${!DHCP4_*} \
+		${!DHCP6_*} \
+		${!VPN_*}
+	do
+		ARGV+=($var="${!var}");
+	done
+
+	runevent "${ARGV[@]}"
+}
+
+# do not let NetworkManager kill us if we run too long
+run & disown

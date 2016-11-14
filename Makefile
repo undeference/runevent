@@ -1,5 +1,7 @@
 CC=gcc
 RM=rm -f
+INSTALL=install
+LN=ln -sf
 OPTIMIZE=-DNDEBUG -O3
 DEBUG=-g3
 WARN=-Wall -Wno-incompatible-pointer-types
@@ -9,12 +11,14 @@ EXE=runevent
 BINARYHEAP=../binaryheap
 INCLUDE=-I $(BINARYHEAP)
 
+NMDISPATCHER=/etc/NetworkManager/dispatcher.d
+DHCLIENTEXIT=/etc/dhcp/dhclient-exit-hooks
+
 SOURCES=$(BINARYHEAP)/bheap.c runevent.c
 OBJECTS=$(SOURCES:.c=.o)
 
-ifndef CONFIGFILE
-	CONFIGFILE=/etc/runevent.conf
-endif
+CONFIGFILE?=/etc/runevent.conf
+SCRIPTPATH?=/usr/share/runevent
 DEFS+= -DCONFIGFILE=\"$(CONFIGFILE)\"
 
 ifdef EVT_EXT
@@ -73,5 +77,14 @@ clean:
 	$(RM) *.o $(EXE) $(EXE)dbg
 
 install:
-	install -g root -u root -m 700 $(EXE) /usr/sbin
-	install -g root -u root -m 644 $(CONFIGFILE) /etc
+	$(INSTALL) -g root -u root -m 700 $(EXE) /usr/sbin
+	$(INSTALL) -g root -u root -m 644 $(CONFIGFILE) /etc
+	$(INSTALL) -g root -u root -m 700 -t $(SCRIPTPATH) scripts/*
+	$(LN) $(SCRIPTPATH)/nm-dispatcher $(NMDISPATCHER)/99-runevent
+	#$(LN) $(SCRIPTPATH)/dhcp $(DHCLIENTEXIT)
+
+remove:
+	$(RM) /usr/sbin/$(EXE) \
+		/etc/$(CONFIGFILE) \
+		$(SCRIPTPATH) \
+		$(NMDISPATCHER)/99-runevent
