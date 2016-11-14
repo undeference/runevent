@@ -1,5 +1,5 @@
 CC=gcc
-RM=rm -f
+RM=rm -fr
 INSTALL=install
 MKDIR=mkdir -p
 LN=ln -sf
@@ -85,7 +85,7 @@ install:
 	$(LN) $(SCRIPTPATH)/nm-dispatcher $(NMDISPATCHER)/99-runevent
 	#$(LN) $(SCRIPTPATH)/dhcp $(DHCLIENTEXIT)
 
-remove:
+uninstall:
 	$(RM) /usr/sbin/$(EXE) \
 		/etc/$(CONFIGFILE) \
 		$(SCRIPTPATH) \

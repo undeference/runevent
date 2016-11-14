@@ -5,7 +5,7 @@ IF="$1"
 STATUS="$2"
 
 run () {
-	ARGV=("$STATUS" IF="$IF")
+	ARGV=(nm-dispatcher STATUS="$STATUS" IF="$IF")
 
 	for var in \
 		${!CONNECTION_*} \
