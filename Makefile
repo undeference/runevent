@@ -77,9 +77,9 @@ clean:
 	$(RM) *.o $(EXE) $(EXE)dbg
 
 install:
-	$(INSTALL) -g root -u root -m 700 $(EXE) /usr/sbin
-	$(INSTALL) -g root -u root -m 644 $(CONFIGFILE) /etc
-	$(INSTALL) -g root -u root -m 700 -t $(SCRIPTPATH) scripts/*
+	$(INSTALL) -g root -o root -m 700 $(EXE) /usr/sbin
+	$(INSTALL) -g root -o root -m 644 $(CONFIGFILE) /etc
+	$(INSTALL) -g root -o root -m 700 -t $(SCRIPTPATH) scripts/*
 	$(LN) $(SCRIPTPATH)/nm-dispatcher $(NMDISPATCHER)/99-runevent
 	#$(LN) $(SCRIPTPATH)/dhcp $(DHCLIENTEXIT)
 
