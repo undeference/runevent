@@ -1,1 +1,13 @@
 #!/bin/bash
+
+ARGV=( \
+	reason=$reason \
+	interface="$interface" \
+	medium="$medium" \
+)
+
+for var in ${!new_*} ${!old_*} ${!alias_*} routers; do
+	ARGV+=($var="${!var}")
+done
+
+runevent dhclient-${reason,,} "${ARGV[@]}" & disown
