@@ -442,7 +442,7 @@ __attribute__ ((format (printf, 2, 3))) int mail (struct subproc *proc, const ch
 		return 0;
 	va_list ap;
 	va_start (ap, fmt);
-	/* XXX */
+	/* MAIL_SUBJECT */
 	if (initmail (proc, "runevent"))
 		r = vdprintf (proc->mail.fd[0], fmt, ap);
 	else
@@ -665,8 +665,10 @@ static void readfd2 (struct subproc *proc, fd_set *fds, int *num) {
 					proc->path, strerror (errno));
 				break;
 			}
-			buf[n] = '\0';
-			mail (proc, "%s", buf);
+			if (n > 0) {
+				buf[n] = '\0';
+				mail (proc, "%s", buf);
+			}
 		} while (n == sizeof (buf) - 1);
 		/* eof */
 		if (n == 0) {
@@ -685,8 +687,6 @@ struct spout {
 int spoutput (const void *arg1, void *arg2) {
 	struct subproc *proc = *(struct subproc **)arg1;
 	struct spout *output = arg2;
-	/* MAIL_SUBJECT */
-	initmail (proc, "runevent");
 	readfd2 (proc, &output->fdset, &output->num);
 	return 0;
 }
