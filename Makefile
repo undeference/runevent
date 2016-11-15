@@ -82,7 +82,7 @@ install:
 	$(INSTALL) -g root -o root -m 644 runevent.conf $(CONFIGFILE)
 	$(INSTALL) -g root -o root -m 700 -t $(SCRIPTPATH) scripts/*
 	$(LN) $(SCRIPTPATH)/nm-dispatcher $(NMDISPATCHER)/99-runevent
-	$(MV) $(DHCLIENTEXIT) $(SYS_EVT_DIR)/dhclient-exit-hooks$(EVT_EXT) &> /dev/null || true
+	[ ! -f $(SYS_EVT_DIR)/dhclient-exit-hooks$(EVT_EXT) ] && $(MV) $(DHCLIENTEXIT) $(SYS_EVT_DIR)/dhclient-exit-hooks$(EVT_EXT) &> /dev/null || true
 	$(LN) $(SCRIPTPATH)/dhclient-exit-hooks $(DHCLIENTEXIT)
 
 uninstall:
