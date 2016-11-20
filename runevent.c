@@ -428,6 +428,7 @@ pid_t initmail (struct subproc *proc, const char *subject) {
 	args[4] = pw->pw_name;
 	args[5] = NULL;
 	proc->mail.pid = open3 (&proc->mail.fd[0], NULL, NULL, pw, NULL, (char * const *)args, NULL);
+	syslog (LOG_INFO, "started %s for %s", args[0], proc->path);
 	/* MAIL_HEADER */
 	if (proc->mail.pid > -1) {
 		dprintf (proc->mail.fd[0], "This is to inform you about %s\n\n",
@@ -496,6 +497,8 @@ struct subproc *runevent (const struct passwd *pw, char * const *argv, char * co
 	if (proc->pid == -1)
 		goto fail;
 	DEBUG ("open3 '%s' pid %d with stdout piped to %d and stderr to %d", argv[0], proc->pid, proc->fd[0], proc->fd[1]);
+	syslog (LOG_INFO, "run %s (%d) for %s", argv[0], proc->pid,
+		pw ? pw->pw_name : "system");
 	SETFDS (proc->fd);
 	clock_gettime (CLOCK_MONOTONIC, &proc->time);
 	proc->time.tv_sec += cfgvalue ("PROC_RUN_TIME");
