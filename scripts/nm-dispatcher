@@ -15,7 +15,7 @@ for var in \
 	${!DHCP6_*} \
 	${!VPN_*}
 do
-	ARGV+=($var="${!var}");
+	ARGV+=($var="${!var}")
 done
 
 /usr/sbin/runevent "${ARGV[@]}" & disown
