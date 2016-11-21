@@ -18,4 +18,4 @@ do
 	ARGV+=($var="${!var}");
 done
 
-runevent "${ARGV[@]}" & disown
+/usr/sbin/runevent "${ARGV[@]}" & disown
