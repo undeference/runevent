@@ -20,7 +20,6 @@
 #include <syslog.h>
 #include <signal.h>
 #include <fcntl.h>
-#include <syslog.h>
 
 /* specify -I or -L or whatever it is */
 #include <bheap.h>
