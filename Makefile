@@ -59,7 +59,7 @@ endif
 
 CFLAGS+= $(DEFS)
 
-.PHONY all debug release clean install uninstall
+.PHONY: all debug release clean install uninstall
 
 default: release
 all: debug release
