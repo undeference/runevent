@@ -555,6 +555,7 @@ int spexited (const void *arg1, void *arg2) {
 	return 0;
 }
 
+static int reap = 0;
 void chld (int signum, siginfo_t *sinfo, void *unused) {
 	/* this should only be ours, but if not, still need to reap */
 	int status, code;
@@ -566,6 +567,7 @@ void chld (int signum, siginfo_t *sinfo, void *unused) {
 		DEBUG ("waitpid failed: %s", strerror (errno));
 		goto done;
 	}
+	reap = 1;
 	if (WIFEXITED (status)) {
 		if ((code = WEXITSTATUS (status)) != EXIT_SUCCESS)
 			syslog (LOG_WARNING, "%d exited with status %d",
@@ -886,7 +888,10 @@ int main (int argc, char **argv) {
 			if (output.num > 0)
 				heapsearch (heap, NULL, 0, spoutput, &output);
 			/* free handler slots that are not needed */
-			heapdelete (heap, spdel, NULL);
+			if (reap) {
+				heapdelete (heap, spdel, NULL);
+				reap = 0;
+			}
 			continue;
 		}
 		if (!(pw = getpwent ())) {
