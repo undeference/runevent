@@ -75,6 +75,10 @@
 
 #define ARRAYN(a) (sizeof (a) / sizeof (*(a)))
 
+#ifndef TEMP_FAILURE_RETRY
+#define TEMP_FAILURE_RETRY(x) do { } while ((x) == -1 && errno == EINTR)
+#endif
+
 char *skipspaces (char *s, int n) {
 	while (*s && isspace (*s))
 		s += n;
@@ -244,19 +248,8 @@ int uidmin (void) {
 	return c->value;
 }
 
-void closefd (int fd) {
-	int r;
-	do {
-		r = close (fd);
-	} while (r == -1 && errno == EINTR);
-}
-
-void dupfd (int from, int to) {
-	int r;
-	do {
-		r = dup2 (from, to);
-	} while (r == -1 && errno == EINTR);
-}
+#define closefd(f) TEMP_FAILURE_RETRY (close (f))
+#define dupfd(f,t) TEMP_FAILURE_RETRY (dup2 (f, t))
 
 void closefrom (int min) {
 	struct dirent *f;
@@ -661,9 +654,8 @@ static void readfd2 (struct subproc *proc, fd_set *fds, int *num) {
 			continue;
 
 		do {
-			do {
-				n = read (proc->fd[i], buf, sizeof (buf) - 1);
-			} while (n == -1 && errno == EINTR);
+			TEMP_FAILURE_RETRY (n = read (proc->fd[i], buf,
+				sizeof (buf) - 1));
 			if (n == -1) {
 				syslog (LOG_WARNING, "read output from '%s': %s",
 					proc->path, strerror (errno));
@@ -875,11 +867,9 @@ int main (int argc, char **argv) {
 				/* timeout is negative, so don't select() */
 				continue;
 			}
-			do {
-				output.num = pselect (nfds,
-					&output.fdset, NULL, NULL /* check too? */,
-					&timeout, NULL);
-			} while (output.num == -1 && errno == EINTR);
+			TEMP_FAILURE_RETRY (output.num = pselect (nfds,
+				&output.fdset, NULL, NULL /* check too? */,
+				&timeout, NULL));
 			if (output.num < 0) {
 				DEBUG ("pselect error: %s", strerror (errno));
 				continue;
