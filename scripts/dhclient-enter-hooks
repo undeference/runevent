@@ -1,0 +1,16 @@
+#!/bin/bash
+# This file is part of runevent. If you had a dhclient-exit-hooks file, it was
+# moved to /etc/events.d/dhclient-exit-hooks.handler. If runevent is removed, it
+# will be moved back
+
+ARGV=( \
+	reason=$reason \
+	interface="$interface" \
+	medium="$medium" \
+)
+
+for var in ${!new_*} ${!old_*} ${!alias_*} routers; do
+	ARGV+=($var="${!var}")
+done
+
+/usr/sbin/runevent dhclient-enter-hooks "${ARGV[@]}" & disown

@@ -14,6 +14,7 @@ BINARYHEAP=../binaryheap
 INCLUDE=-I $(BINARYHEAP)
 
 NMDISPATCHER=/etc/NetworkManager/dispatcher.d
+DHCLIENTENTER=/etc/dhcp/dhclient-enter-hooks
 DHCLIENTEXIT=/etc/dhcp/dhclient-exit-hooks
 
 SOURCES=$(BINARYHEAP)/bheap.c runevent.c
@@ -84,6 +85,8 @@ install:
 	$(INSTALL) -g root -o root -m 644 runevent.conf $(CONFIGFILE)
 	$(INSTALL) -g root -o root -m 700 -t $(SCRIPTPATH) scripts/*
 	$(LN) $(SCRIPTPATH)/nm-dispatcher $(NMDISPATCHER)/99-runevent
+	[ ! -f $(SYS_EVT_DIR)/dhclient-enter-hooks$(EVT_EXT) ] && $(MV) $(DHCLIENTENTER) $(SYS_EVT_DIR)/dhclient-enter-hooks$(EVT_EXT) &> /dev/null || true
+	$(LN) $(SCRIPTPATH)/dhclient-enter-hooks $(DHCLIENTENTER)
 	[ ! -f $(SYS_EVT_DIR)/dhclient-exit-hooks$(EVT_EXT) ] && $(MV) $(DHCLIENTEXIT) $(SYS_EVT_DIR)/dhclient-exit-hooks$(EVT_EXT) &> /dev/null || true
 	$(LN) $(SCRIPTPATH)/dhclient-exit-hooks $(DHCLIENTEXIT)
 
@@ -92,5 +95,7 @@ uninstall:
 		/etc/$(CONFIGFILE) \
 		$(SCRIPTPATH) \
 		$(NMDISPATCHER)/99-runevent \
+		$(DHCLIENTENTER) \
 		$(DHCLIENTEXIT)
+	$(MV) $(DHCLIENTENTER)/dhclient-enter-hooks$(EVT_EXT) $(DHCLIENTENTER) &> /dev/null || true
 	$(MV) $(DHCLIENTEXIT)/dhclient-exit-hooks$(EVT_EXT) $(DHCLIENTEXIT) &> /dev/null || true
