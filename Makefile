@@ -20,6 +20,7 @@ DHCLIENTEXIT=/etc/dhcp/dhclient-exit-hooks
 SOURCES=$(BINARYHEAP)/bheap.c runevent.c
 OBJECTS=$(SOURCES:.c=.o)
 
+EXEPATH=/usr/bin
 CONFIGFILE?=/etc/runevent.conf
 SCRIPTPATH?=/usr/share/runevent
 DEFS+= -DCONFIGFILE=\"$(CONFIGFILE)\"
@@ -81,7 +82,7 @@ clean:
 
 install:
 	$(MKDIR) $(SCRIPTPATH) $(SYS_EVT_DIR)
-	$(INSTALL) -g root -o root -m 755 -s $(EXE) /usr/sbin
+	$(INSTALL) -g root -o root -m 755 -s $(EXE) $(EXEPATH)
 	$(INSTALL) -g root -o root -m 644 runevent.conf $(CONFIGFILE)
 	$(INSTALL) -g root -o root -m 700 -t $(SCRIPTPATH) scripts/*
 	$(LN) $(SCRIPTPATH)/nm-dispatcher $(NMDISPATCHER)/99-runevent
@@ -91,8 +92,8 @@ install:
 	$(LN) $(SCRIPTPATH)/dhclient-exit-hooks $(DHCLIENTEXIT)
 
 uninstall:
-	$(RM) /usr/sbin/$(EXE) \
-		/etc/$(CONFIGFILE) \
+	$(RM) $(EXEPATH)/$(EXE) \
+		$(CONFIGFILE) \
 		$(SCRIPTPATH) \
 		$(NMDISPATCHER)/99-runevent \
 		$(DHCLIENTENTER) \
