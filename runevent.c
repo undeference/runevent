@@ -251,6 +251,17 @@ int uidmin (void) {
 #define closefd(f) TEMP_FAILURE_RETRY (close (f))
 #define dupfd(f,t) TEMP_FAILURE_RETRY (dup2 (f, t))
 
+static int sysrun;
+#define syslog(l,...) do { \
+	if (sysrun) \
+		syslog (l, __VA_ARGS__); \
+	else { \
+		FILE *fh = l > LOG_NOTICE ? stderr : stdout; \
+		fprintf (fh, __VA_ARGS__); \
+		fputc ('\n', fh); \
+	} \
+} while (0)
+
 void closefrom (int min) {
 	struct dirent *f;
 	DIR *d = opendir ("/dev/fd");
@@ -436,7 +447,10 @@ __attribute__ ((format (printf, 2, 3))) int mail (struct subproc *proc, const ch
 	va_list ap;
 	va_start (ap, fmt);
 	/* MAIL_SUBJECT */
-	if (initmail (proc, "runevent"))
+	if (!sysrun) {
+		fprintf (stderr, "%s[%d] says:  ", proc->path, proc->pid);
+		vfprintf (stderr, fmt, ap);
+	} else if (initmail (proc, "runevent"))
 		r = vdprintf (proc->mail.fd[0], fmt, ap);
 	else
 		syslog (LOG_ERR, "unable to send mail for uid %d", proc->uid);
@@ -697,16 +711,19 @@ static struct subproc *runif (const struct passwd *pw, char **argv, char * const
 	if (!S_ISREG (f.st_mode))
 		return NULL;
 
-	if (f.st_uid != (pw ? pw->pw_uid : 0)) {
-		syslog (LOG_ERR, "'%s' is not owned by %s",
-			argv[0], pw ? pw->pw_name : "root");
-		return NULL;
-	}
+	/* be more lenient for user-only runs */
+	if (sysrun) {
+		if (f.st_uid != (pw ? pw->pw_uid : 0)) {
+			syslog (LOG_ERR, "'%s' is not owned by %s",
+				argv[0], pw ? pw->pw_name : "root");
+			return NULL;
+		}
 
-	if (f.st_mode & (S_ISUID | S_IWGRP | S_IWOTH)) {
-		syslog (LOG_ERR, "'%s' must not be group/user-writable or have "
-			"set-uid/gid bits set", argv[0]);
-		return NULL;
+		if (f.st_mode & (S_ISUID | S_IWGRP | S_IWOTH)) {
+			syslog (LOG_ERR, "'%s' must not be group/user-writable "
+				"or have set-uid/gid bits set", argv[0]);
+			return NULL;
+		}
 	}
 
 	if (!(f.st_mode & S_IXUSR)) {
@@ -765,26 +782,30 @@ a.	select() on subprocs' fds and next signal time
 */
 int main (int argc, char **argv) {
 	struct sigaction sa;
-	struct passwd *pw;
+	struct passwd *pw = NULL;
 	struct timespec now;
 	struct subproc *proc;
 	int i, done = 0;
 	int maxprocs, procsigtime;
 	char *args[2], *env[argc - 1];
 
-	openlog ("runevent", 0, LOG_DAEMON);
+	/* if this is root, it is a system run */
+	sysrun = getuid () == 0;
+
+	if (sysrun)
+		openlog ("runevent", 0, LOG_DAEMON);
+	else
+		syslog (LOG_WARNING,
+			"(%s must be run as root to do a system-wide run)",
+			argv[0]);
 
 	if (argc < 2) {
-		syslog (LOG_CRIT, "run without an event");
+		syslog (LOG_CRIT, "%s: no event specified", argv[0]);
 		goto fail;
 	}
 
-#ifdef NDEBUG
-	if (getuid () != 0) {
-		syslog (LOG_CRIT, "must be run as root");
-		goto fail;
-	}
-#else
+#ifndef NDEBUG
+	/* verify orders for bsearch() */
 	_checkconfiguration (PNSZ (configuration));
 	_checkconfiguration (PNSZ (uidrange));
 #endif
@@ -813,8 +834,10 @@ int main (int argc, char **argv) {
 		procsigtime = 1;
 	}
 
-	getuidrange ();
-	DEBUG ("got UID range %d-%d", uidmin (), uidmax ());
+	if (sysrun) {
+		getuidrange ();
+		DEBUG ("got UID range %d-%d", uidmin (), uidmax ());
+	}
 
 	/* register SIGCHLD handler */
 	sa.sa_flags = SA_NOCLDSTOP | SA_SIGINFO;
@@ -834,8 +857,18 @@ int main (int argc, char **argv) {
 
 	clock_gettime (CLOCK_MONOTONIC, &now);
 
-	/* try running system event handler */
-	proc = runif (NULL, args, env);
+	/* this is not a system run, so skip some of the work */
+	if (!sysrun) {
+		if (!(pw = getpwuid (getuid ()))) {
+			syslog (LOG_CRIT, "getpwuid: %s", strerror (errno));
+			goto fail;
+		}
+		/* don't try to run more handlers */
+		done = 1;
+	}
+
+	/* try running system* event handler */
+	proc = runif (pw, args, env);
 
 	/* now the main loop */
 	while (1) {
@@ -884,9 +917,12 @@ int main (int argc, char **argv) {
 			}
 			continue;
 		}
+		/*
+		if this is not a system run, done was already set so execution
+		does not reach this point
+		*/
 		if (!(pw = getpwent ())) {
 			done = 1;
-			endpwent ();
 			continue;
 		}
 		if (!userok (pw))
@@ -894,6 +930,7 @@ int main (int argc, char **argv) {
 		/* run user handler */
 		proc = runif (pw, args, env);
 	}
+	endpwent ();
 	return EXIT_SUCCESS;
 	fail:
 	endpwent ();

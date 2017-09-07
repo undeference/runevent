@@ -81,7 +81,7 @@ clean:
 
 install:
 	$(MKDIR) $(SCRIPTPATH) $(SYS_EVT_DIR)
-	$(INSTALL) -g root -o root -m 700 -s $(EXE) /usr/sbin
+	$(INSTALL) -g root -o root -m 755 -s $(EXE) /usr/sbin
 	$(INSTALL) -g root -o root -m 644 runevent.conf $(CONFIGFILE)
 	$(INSTALL) -g root -o root -m 700 -t $(SCRIPTPATH) scripts/*
 	$(LN) $(SCRIPTPATH)/nm-dispatcher $(NMDISPATCHER)/99-runevent
