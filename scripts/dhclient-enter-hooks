@@ -13,4 +13,4 @@ for var in ${!new_*} ${!old_*} ${!alias_*} routers; do
 	ARGV+=($var="${!var}")
 done
 
-/usr/sbin/runevent dhclient-enter-hooks "${ARGV[@]}" & disown
+runevent dhclient-enter-hooks "${ARGV[@]}" & disown
