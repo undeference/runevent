@@ -251,7 +251,7 @@ int uidmin (void) {
 #define closefd(f) TEMP_FAILURE_RETRY (close (f))
 #define dupfd(f,t) TEMP_FAILURE_RETRY (dup2 (f, t))
 
-static int sysrun;
+static int sysrun = 0;
 #define syslog(l,...) do { \
 	if (sysrun) \
 		syslog (l, __VA_ARGS__); \
@@ -281,7 +281,53 @@ void closefrom (int min) {
 	closedir (d);
 }
 
-pid_t open3 (int *cin, int *cout, int *cerr, const struct passwd *pw, const char *dir, char * const *argv, char * const *env) {
+void setupenv (const struct passwd *pw, char * const *env) {
+	char path[256];
+	/* set up the env */
+	if (clearenv () != 0) {
+		syslog (LOG_CRIT, "clearenv failed");
+		exit (EXIT_FAILURE);
+	}
+	if (env) {
+		for (; *env; env++)
+			putenv (*env);
+	}
+	/* set up USER, LOGNAME, HOME, PATH */
+	setenv ("USER", pw->pw_name, 1);
+	setenv ("LOGNAME", pw->pw_name, 1);
+	setenv ("HOME", pw->pw_dir, 1);
+	confstr (_CS_PATH, path, sizeof (path));
+	setenv ("PATH", path, 1);
+}
+
+int su (const struct passwd *pw) {
+	if (!pw) {
+		syslog (LOG_CRIT, "su with no target");
+		return 0;
+	}
+
+	if (chdir (pw->pw_dir) != 0) {
+		syslog (LOG_ERR, "chdir(\"%s\"): %s",
+			pw->pw_dir, strerror (errno));
+		return 0;
+	}
+
+	if (setgid (pw->pw_gid) != 0) {
+		syslog (LOG_ERR, "setgid(%d): %s",
+			pw->pw_gid, strerror (errno));
+		return 0;
+	}
+
+	if (setuid (pw->pw_uid) != 0) {
+		syslog (LOG_ERR, "setuid(%d): %s",
+			pw->pw_uid, strerror (errno));
+		return 0;
+	}
+
+	return 1;
+}
+
+pid_t open3 (int *cin, int *cout, int *cerr, const struct passwd *pw, char * const *argv, char * const *env) {
 	int in[2] = {-1}, out[2] = {-1}, err[2] = {-1};
 	pid_t pid;
 #define PIPEX(fd) do { \
@@ -299,12 +345,8 @@ pid_t open3 (int *cin, int *cout, int *cerr, const struct passwd *pw, const char
 	}
 	if (pid == 0) {
 		/* child */
-		char path[128];
-		if (dir && chdir (dir) != 0) {
-			syslog (LOG_ERR, "unable to chdir to '%s'", dir);
-			exit (EXIT_FAILURE);
-		}
 		if (!pw) {
+			/* can this fail? */
 			pw = getpwuid (0);
 			errno = 0;
 			setpriority (PRIO_PROCESS, getpid (),
@@ -323,11 +365,8 @@ pid_t open3 (int *cin, int *cout, int *cerr, const struct passwd *pw, const char
 					cfgvalue ("USER_NICE"), strerror (errno));
 			}
 			/* drop privileges */
-			if (setgid (pw->pw_gid) != 0 || setuid (pw->pw_uid) != 0) {
-				syslog (LOG_ERR, "drop privileges failed: %s",
-					strerror (errno));
+			if (!su (pw))
 				exit (EXIT_FAILURE);
-			}
 		}
 		/* close unneeded fds */
 #define CLODUP(fd,n,x) do { \
@@ -343,21 +382,11 @@ pid_t open3 (int *cin, int *cout, int *cerr, const struct passwd *pw, const char
 #undef CLODUP
 		/* close others */
 		closefrom (3);
-		/* set up the env */
-		if (clearenv () != 0)
-			exit (EXIT_FAILURE);
-		if (env) {
-			for (; *env; env++)
-				putenv (*env);
-		}
-		/* set up USER, LOGNAME, HOME, PATH */
-		setenv ("USER", pw->pw_name, 1);
-		setenv ("LOGNAME", pw->pw_name, 1);
-		setenv ("HOME", pw->pw_dir, 1);
-		confstr (_CS_PATH, path, sizeof (path));
-		setenv ("PATH", path, 1);
+		/* do we want HOME set for system run? */
+		setupenv (pw, env);
 		execv (argv[0], argv);
-		fprintf (stderr, "exec '%s' failed: %s", argv[0], strerror (errno));
+		fprintf (stderr, "exec '%s' failed: %s",
+			argv[0], strerror (errno));
 		/* should not happen */
 		exit (EXIT_FAILURE);
 	}
@@ -430,7 +459,8 @@ pid_t initmail (struct subproc *proc, const char *subject) {
 	args[3] = "--";
 	args[4] = pw->pw_name;
 	args[5] = NULL;
-	proc->mail.pid = open3 (&proc->mail.fd[0], NULL, NULL, pw, NULL, (char * const *)args, NULL);
+	proc->mail.pid = open3 (&proc->mail.fd[0], NULL, NULL, pw,
+		(char * const *)args, NULL);
 	syslog (LOG_INFO, "started %s for %s", args[0], proc->path);
 	/* MAIL_HEADER */
 	if (proc->mail.pid > -1) {
@@ -497,9 +527,7 @@ struct subproc *runevent (const struct passwd *pw, char * const *argv, char * co
 		proc->uid = pw->pw_uid;
 		proc->gid = pw->pw_gid;
 	}
-	proc->pid = open3 (NULL, &proc->fd[0], &proc->fd[1], pw,
-		pw ? pw->pw_dir : cfgstr ("SYS_DIR"),
-		argv, env);
+	proc->pid = open3 (NULL, &proc->fd[0], &proc->fd[1], pw, argv, env);
 	if (proc->pid == -1)
 		goto fail;
 	DEBUG ("open3 '%s' pid %d with stdout piped to %d and stderr to %d", argv[0], proc->pid, proc->fd[0], proc->fd[1]);
@@ -785,21 +813,55 @@ int main (int argc, char **argv) {
 	struct passwd *pw = NULL;
 	struct timespec now;
 	struct subproc *proc;
-	int i, done = 0;
+	int i = 1, j, done = 0;
 	int maxprocs, procsigtime;
 	char *args[2], *env[argc - 1];
+	uid_t uid = getuid ();
 
-	/* if this is root, it is a system run */
-	sysrun = getuid () == 0;
-
-	if (sysrun)
-		openlog ("runevent", 0, LOG_DAEMON);
+	if (argv[i][0] == '-' && argv[i][1] == 'u') {
+		char *name;
+		if (uid != 0) {
+			syslog (LOG_ERR, "-u is only valid if you are root");
+			goto fail;
+		}
+		if (argv[i][2])
+			name = &argv[i][2];
+		else if (++i >= argc) {
+			syslog (LOG_CRIT, "-u: user expected");
+			goto fail;
+		} else
+			name = argv[i];
+		errno = 0;
+		if (!(pw = getpwnam (name))) {
+			syslog (LOG_CRIT, "getpwnam(\"%s\"): %s", name,
+				errno ? strerror (errno) : "no such user");
+			goto fail;
+		}
+		i++;
+		/* drop privileges */
+		uid = pw->pw_uid;
+		if (!su (pw))
+			goto fail;
+		setupenv (pw, NULL);
+		closefrom (3);
+	} else if (uid == 0)
+		sysrun = 1;
 	else
 		syslog (LOG_WARNING,
 			"(%s must be run as root to do a system-wide run)",
 			argv[0]);
 
-	if (argc < 2) {
+	if (sysrun) {
+		const char *dir = cfgstr ("SYS_DIR");
+		openlog ("runevent", 0, LOG_DAEMON);
+		if (dir && chdir (dir) != 0) {
+			syslog (LOG_ERR, "chdir(\"%s\"): %s",
+				dir, strerror (errno));
+			goto fail;
+		}
+	}
+
+	if (argc < i + 1) {
 		syslog (LOG_CRIT, "%s: no event specified", argv[0]);
 		goto fail;
 	}
@@ -809,18 +871,18 @@ int main (int argc, char **argv) {
 	_checkconfiguration (PNSZ (configuration));
 	_checkconfiguration (PNSZ (uidrange));
 #endif
+	if (sysrun)
+		parseconfig (CONFIGFILE, PNSZ (configuration));
 
 	/* set up argv and env */
-	evt = argv[1];
+	evt = argv[i];
 	/* argv[0] will be set below */
 	args[1] = NULL;
-	for (i = 0; i < argc - 2; i++)
-		env[i] = argv[i + 2];
-	env[i] = NULL;
+	for (j = 0; j < argc - i; j++)
+		env[j] = argv[j + i];
+	env[j] = NULL;
 
 	FD_ZERO (&fdset);
-
-	parseconfig (CONFIGFILE, PNSZ (configuration));
 
 	maxprocs = cfgvalue ("MAX_PROCS");
 	if (maxprocs < 1) {
@@ -830,7 +892,8 @@ int main (int argc, char **argv) {
 
 	procsigtime = cfgvalue ("PROC_SIG_TIME");
 	if (procsigtime < 1) {
-		syslog (LOG_WARNING, "PROC_SIG_TIME (%d) is less than 1", procsigtime);
+		syslog (LOG_WARNING, "PROC_SIG_TIME (%d) is less than 1",
+			procsigtime);
 		procsigtime = 1;
 	}
 
@@ -844,7 +907,8 @@ int main (int argc, char **argv) {
 	sa.sa_sigaction = chld;
 	sigemptyset (&sa.sa_mask);
 	if (sigaction (SIGCHLD, &sa, NULL) == -1) {
-		syslog (LOG_CRIT, "register CHLD handler: %s", strerror (errno));
+		syslog (LOG_CRIT, "register CHLD handler: %s",
+			strerror (errno));
 		goto fail;
 	}
 
@@ -859,8 +923,10 @@ int main (int argc, char **argv) {
 
 	/* this is not a system run, so skip some of the work */
 	if (!sysrun) {
-		if (!(pw = getpwuid (getuid ()))) {
-			syslog (LOG_CRIT, "getpwuid: %s", strerror (errno));
+		errno = 0;
+		if (!(pw = getpwuid (uid))) {
+			syslog (LOG_CRIT, "getpwuid(%d): %s", uid,
+				errno ? strerror (errno) : "no such user");
 			goto fail;
 		}
 		/* don't try to run more handlers */
