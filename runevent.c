@@ -776,20 +776,24 @@ int userok (const struct passwd *pw) {
 
 	if (!(gr = getgrnam (grnam))) {
 		syslog (LOG_WARNING, "no such group '%s'; ignoring", grnam);
-		return 1;
+		goto success;
 	}
 
 	DEBUG ("checking if %s is a member of %s", pw->pw_name, grnam);
 
 	if (pw->pw_gid == gr->gr_gid)
-		return 1;
+		goto success;
 
 	for (mem = gr->gr_mem; *mem; mem++) {
 		if (strcmp (pw->pw_name, *mem) == 0)
-			return 1;
+			goto success;
 	}
 
+	endgrent ();
 	return 0;
+	success:
+	endgrent ();
+	return 1;
 }
 
 /*
