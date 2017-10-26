@@ -90,17 +90,17 @@ char *skipspaces (char *s, int n) {
  * KEY  "value" # comment
  */
 
-enum {
-	T_FREE,
-	T_INT,
-	T_STR
-};
-
 struct conf {
 	char *name;
-	int type;
-	char *str;
-	int value;
+	enum {
+		T_FREE,
+		T_INT,
+		T_STR
+	} type;
+	union {
+		int num;
+		char *str;
+	} value;
 };
 
 int confcmp (const void *name, const void *c) {
@@ -167,9 +167,9 @@ int parseconfig (const char *file, struct conf **config, size_t num, size_t sz) 
 		}
 
 		if (cfg->type == T_INT)
-			cfg->value = atoi (c);
+			cfg->value.num = atoi (c);
 		else if (cfg->type == T_STR)
-			cfg->str = strdup (c);
+			cfg->value.str = strdup (c);
 	}
 	fclose (f);
 	free (line);
@@ -177,24 +177,24 @@ int parseconfig (const char *file, struct conf **config, size_t num, size_t sz) 
 }
 
 static struct conf configuration[] = {
-	{ "EVT_EXT", T_STR, EVT_EXT, -1 },
-	{ "GROUP", T_STR, GROUP, -1 },
-	{ "LOGIN_DEFS", T_STR, LOGIN_DEFS, -1 },
-	/*{ "MAIL_HEADER", T_STR, "This is to inform you about %n" },
-	{ "MAIL_SUBJECT", T_STR, "runevent: %n" }, */
-	{ "MAILER", T_STR, MAILER, -1 },
-	{ "MAX_PROCS", T_INT, NULL, 4 },
-	{ "NICE", T_INT, NULL, 0 },
-	{ "PROC_RUN_TIME", T_INT, NULL, 120 },
-	{ "PROC_SIG_TIME", T_INT, NULL, 5 },
-	/*{ "RLIMIT", T_INT, NULL, 0 },*/
-	{ "SYS_DIR", T_STR, SYS_DIR, -1 },
-	{ "SYS_EVT_DIR", T_STR, SYS_EVT_DIR, -1 },
-	{ "UID_MAX_KEY", T_STR, UID_MAX_KEY, -1 },
-	{ "UID_MIN_KEY", T_STR, UID_MIN_KEY, -1 },
-	{ "USER_EVT_DIR", T_STR, USER_EVT_DIR, -1 },
-	{ "USER_NICE", T_INT, NULL, 0 },
-	/*{ "USER_RLIMIT", T_INT, NULL, 0 }*/
+	{ .name = "EVT_EXT", .type = T_STR, .value.str = EVT_EXT },
+	{ .name = "GROUP", .type = T_STR, .value.str = GROUP },
+	{ .name = "LOGIN_DEFS", .type = T_STR, .value.str = LOGIN_DEFS },
+	/*{ .name = "MAIL_HEADER", .type = T_STR, .value.str = "This is to inform you about %n" },
+	{ .name = "MAIL_SUBJECT", .type = T_STR, .value.str = "runevent: %n" }, */
+	{ .name = "MAILER", .type = T_STR, .value.str = MAILER },
+	{ .name = "MAX_PROCS", .type = T_INT, .value.num = 4 },
+	{ .name = "NICE", .type = T_INT, .value.num = 0 },
+	{ .name = "PROC_RUN_TIME", .type = T_INT, .value.num = 120 },
+	{ .name = "PROC_SIG_TIME", .type = T_INT, .value.num = 5 },
+	/*{ .name = "RLIMIT", .type = T_INT, .value.num = 0 },*/
+	{ .name = "SYS_DIR", .type = T_STR, .value.str = SYS_DIR },
+	{ .name = "SYS_EVT_DIR", .type = T_STR, .value.str = SYS_EVT_DIR },
+	{ .name = "UID_MAX_KEY", .type = T_STR, .value.str = UID_MAX_KEY },
+	{ .name = "UID_MIN_KEY", .type = T_STR, .value.str = UID_MIN_KEY },
+	{ .name = "USER_EVT_DIR", .type = T_STR, .value.str = USER_EVT_DIR },
+	{ .name = "USER_NICE", .type = T_INT, .value.num = 0 },
+	/*{ .name = "USER_RLIMIT", .type = T_INT, .value.num = 0 }*/
 };
 
 #define PNSZ(s) &s, ARRAYN (s), sizeof (*(s))
@@ -220,17 +220,17 @@ struct conf *cget (const char *name) {
 
 int cfgvalue (const char *name) {
 	struct conf *c = cget (name);
-	return c ? c->value : 0;
+	return c ? c->value.num : 0;
 }
 
 char *cfgstr (const char *name) {
 	struct conf *c = cget (name);
-	return c ? c->str : NULL;
+	return c ? c->value.str : NULL;
 }
 
 static struct conf uidrange[] = {
-	{ "UID_MAX", T_INT, NULL, INT_MAX },
-	{ "UID_MIN", T_INT, NULL, INT_MIN }
+	{ .name = "UID_MAX", .type = T_INT, .value.num = INT_MAX },
+	{ .name = "UID_MIN", .type = T_INT, .value.num = INT_MIN }
 };
 
 int getuidrange (void) {
@@ -240,12 +240,12 @@ int getuidrange (void) {
 
 int uidmax (void) {
 	struct conf *c = _cget ("UID_MAX", PNSZ (uidrange));
-	return c->value;
+	return c->value.num;
 }
 
 int uidmin (void) {
 	struct conf *c = _cget ("UID_MIN", PNSZ (uidrange));
-	return c->value;
+	return c->value.num;
 }
 
 #define closefd(f) TEMP_FAILURE_RETRY (close (f))
