@@ -822,6 +822,11 @@ int main (int argc, char **argv) {
 	char *args[2], *env[argc - 1];
 	uid_t uid = getuid ();
 
+	if (argc <= i) {
+		syslog (LOG_CRIT, "no arguments specified");
+		goto fail;
+	}
+
 	if (argv[i][0] == '-' && argv[i][1] == 'u') {
 		char *name;
 		if (uid != 0) {
