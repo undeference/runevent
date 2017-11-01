@@ -10,7 +10,7 @@ WARN=-Wall -Wno-incompatible-pointer-types
 CFLAGS=
 DEFS=
 EXE=runevent
-BINARYHEAP=../binaryheap
+BINARYHEAP=bheap
 INCLUDE=-I $(BINARYHEAP)
 
 NMDISPATCHER=/etc/NetworkManager/dispatcher.d

@@ -21,7 +21,6 @@
 #include <signal.h>
 #include <fcntl.h>
 
-/* specify -I or -L or whatever it is */
 #include <bheap.h>
 
 #ifndef CONFIGFILE
