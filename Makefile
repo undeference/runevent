@@ -78,7 +78,7 @@ $(EXE): $(OBJECTS)
 	$(CC) $(CFLAGS) $(OPTIMIZE) $(WARN) $(INCLUDE) $(OBJECTS) -o $(EXE)
 
 clean:
-	$(RM) *.o $(EXE) $(EXE)dbg
+	$(RM) $(OBJECTS) $(EXE) $(EXE)dbg
 
 install:
 	$(MKDIR) $(SCRIPTPATH) $(SYS_EVT_DIR)
