@@ -64,10 +64,9 @@ CFLAGS+= $(DEFS)
 .PHONY: all debug release clean install uninstall
 
 default: release
-all: debug release
 
-debug:
-	$(MAKE) OPTIMIZE="$(DEBUG)" $(OBJECTS) EXE="$(EXE)dbg" $(EXE)dbg
+debug: OPTIMIZE=$(DEBUG)
+debug: release
 
 release: $(SOURCES) $(EXE)
 
