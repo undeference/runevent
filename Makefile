@@ -1,5 +1,5 @@
 CC=gcc
-RM=rm -fr
+RM=rm -f
 INSTALL=install
 MKDIR=mkdir -p
 LN=ln -sf
@@ -17,7 +17,7 @@ NMDISPATCHER=/etc/NetworkManager/dispatcher.d
 DHCLIENTENTER=/etc/dhcp/dhclient-enter-hooks
 DHCLIENTEXIT=/etc/dhcp/dhclient-exit-hooks
 
-SOURCES=$(BINARYHEAP)/bheap.c runevent.c
+SOURCES=$(BINARYHEAP)/bheap.c src/config.c src/runevent.c src/subproc.c
 OBJECTS=$(SOURCES:.c=.o)
 
 EXEPATH=/usr/bin
@@ -77,7 +77,7 @@ $(EXE): $(OBJECTS)
 	$(CC) $(CFLAGS) $(OPTIMIZE) $(WARN) $(INCLUDE) $(OBJECTS) -o $(EXE)
 
 clean:
-	$(RM) $(OBJECTS) $(EXE) $(EXE)dbg
+	$(RM) $(OBJECTS) $(EXE)
 
 install:
 	$(MKDIR) $(SCRIPTPATH) $(SYS_EVT_DIR)
