@@ -3,7 +3,7 @@
 #include "config.h"
 #include <bheap.h>
 
-int sysrun;
+int sysrun = 0;
 fd_set fdset;
 int nfds = 0;
 char *evt;
