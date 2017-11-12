@@ -190,7 +190,7 @@ static struct subproc *runif (const struct passwd *pw, char **argv, char * const
 		/* check permissions */
 		if (f.st_mode & (S_ISUID | S_IWGRP | S_IWOTH)) {
 			syslog (LOG_ERR, "'%s' must not be group/user-writable "
-				"or have set-uid/gid bits set", argv[0]);
+				"or setuid", argv[0]);
 			return NULL;
 		}
 	}
