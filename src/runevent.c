@@ -16,7 +16,7 @@ int spexited (const void *arg1, void *arg2) {
 
 	/* the subprocess exited */
 	if (proc->pid == *pid) {
-		/* just mark it because messing with the heap is unsafe here */
+		/* just mark it because messing with the bheap is unsafe here */
 		proc->status = SPEXITED;
 		return 1;
 	}
@@ -59,7 +59,7 @@ void chld (int signum, siginfo_t *sinfo, void *unused) {
 			pid, code);
 	}
 
-	/* it is not safe to mess with the heap here */
+	/* it is not safe to mess with the bheap here */
 	if (heapsearch (heap, NULL, 0, spexited, &pid) == -1)
 		/* this is not really an error */
 		syslog (LOG_WARNING, "got unexpected CHLD signal for %d", pid);
@@ -155,7 +155,7 @@ struct subproc *runevent (const struct passwd *pw, char * const *argv, char * co
 	/* it should have its own copy of its name */
 	proc->path = strdup (argv[0]);
 
-	/* add it to the heap */
+	/* add it to the bheap */
 	heapup (heap, &proc);
 	return proc;
 
@@ -261,7 +261,7 @@ int spdelall (const void *arg1, void *arg2) {
 	return 1;
 }
 
-/* remove subprocs from the heap that have exited */
+/* remove subprocs from the bheap that have exited */
 int spdel (const void *arg1, void *arg2) {
 	struct subproc *proc = *(struct subproc **)arg1;
 	if (proc->status != SPEXITED)
@@ -445,7 +445,7 @@ int main (int argc, char **argv) {
 		if (done || heapcount (heap) == maxprocs) {
 			struct timespec timeout;
 			struct spout output;
-			/* get the first subproc from the heap */
+			/* get the first subproc from the bheap */
 			if (!heappeek (heap, &proc))
 				break;
 
