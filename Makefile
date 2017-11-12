@@ -17,6 +17,7 @@
 
 CC=gcc
 RM=rm -f
+RMDIR=rm -fr
 INSTALL=install
 MKDIR=mkdir -p
 LN=ln -sf
@@ -110,9 +111,9 @@ install:
 uninstall:
 	$(RM) $(EXEPATH)/$(EXE) \
 		$(CONFIGFILE) \
-		$(SCRIPTPATH) \
 		$(NMDISPATCHER)/99-runevent \
 		$(DHCLIENTENTER) \
 		$(DHCLIENTEXIT)
+	$(RMDIR) $(SCRIPTPATH)
 	$(MV) $(DHCLIENTENTER)/dhclient-enter-hooks$(EVT_EXT) $(DHCLIENTENTER) &> /dev/null || true
 	$(MV) $(DHCLIENTEXIT)/dhclient-exit-hooks$(EVT_EXT) $(DHCLIENTEXIT) &> /dev/null || true
