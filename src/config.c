@@ -17,7 +17,6 @@ static int cfgcmp (const void *name, const void *c) {
 	return strcmp ((const char *)name, ((const struct conf *)c)->name);
 }
 
-/* for some reason, this isn't getting ARRAYN from runevent.h */
 #define PNSZ(s) &(s), ARRAYN (s), sizeof (*(s))
 /* do the actual search */
 static struct conf *cget (const char *name, struct conf **c, size_t num, size_t sz) {
