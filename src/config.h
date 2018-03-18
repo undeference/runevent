@@ -38,7 +38,7 @@
 #endif
 
 #ifndef MAILER
-#define MAILER "/etc/login.defs"
+#define MAILER "/usr/bin/mail"
 #endif
 
 #ifndef SYS_DIR
