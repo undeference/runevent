@@ -53,7 +53,6 @@
 #define DEBUG(f,...)
 #endif
 
-char *evt;
 extern int sysrun;
 #define syslog(l,...) do { \
 	if (sysrun) \
