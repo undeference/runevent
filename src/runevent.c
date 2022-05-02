@@ -401,7 +401,7 @@ int main (int argc, char **argv) {
 		readconfig ();
 
 	/* set up argv and env for subprocs */
-	evt = argv[i];
+	evt = argv[i++];
 	/* argv[0] will be set below */
 	args[1] = NULL;
 	for (j = 0; j < argc - i; j++)
